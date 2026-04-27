@@ -130,7 +130,7 @@ struct AnthropicService {
                     }
 
                     let body: [String: Any] = [
-                        "model": "claude-sonnet-4-6",
+                        "model": context.model,
                         "max_tokens": 10000,
                         "stream": true,
                         "system": [[

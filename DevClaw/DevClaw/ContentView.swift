@@ -17,6 +17,7 @@ struct SimulatorOption: Identifiable, Hashable {
 struct ChatContext: Equatable {
     let simulator: String?
     let projectPath: String?
+    let model: String
 
     var messagePrefix: String? {
         var sections: [String] = []
@@ -396,6 +397,7 @@ struct ContentView: View {
     @AppStorage("anthropicAPIKey") private var apiKey = ""
     @AppStorage("selectedSimulatorID") private var selectedSimulatorID = ""
     @AppStorage("selectedProjectPath") private var selectedProjectPath = ""
+    @AppStorage("selectedModel") private var selectedModel = "claude-sonnet-4-6"
     @State private var input = ""
     @State private var showSettingsPanel = false
 
@@ -406,6 +408,13 @@ struct ContentView: View {
             inputBar
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(action: buildAndRun) {
+                    Label("Build & Run", systemImage: "play.fill")
+                }
+                .help("Build and run the project")
+                .disabled(!canBuildAndRun)
+            }
             ToolbarItem(placement: .automatic) {
                 Button { showSettingsPanel.toggle() } label: {
                     Image(systemName: showSettingsPanel ? "sidebar.trailing" : "sidebar.right")
@@ -422,7 +431,8 @@ struct ContentView: View {
                 apiKey: $apiKey,
                 simulatorStore: simulatorStore,
                 selectedSimulatorID: $selectedSimulatorID,
-                selectedProjectPath: $selectedProjectPath
+                selectedProjectPath: $selectedProjectPath,
+                selectedModel: $selectedModel
             )
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
         }
@@ -518,7 +528,8 @@ struct ContentView: View {
     private var chatContext: ChatContext {
         ChatContext(
             simulator: selectedSimulatorContext,
-            projectPath: selectedProjectPath.isEmpty ? nil : selectedProjectPath
+            projectPath: selectedProjectPath.isEmpty ? nil : selectedProjectPath,
+            model: selectedModel
         )
     }
 }
@@ -723,6 +734,12 @@ struct SettingsPanel: View {
     @ObservedObject var simulatorStore: SimulatorStore
     @Binding var selectedSimulatorID: String
     @Binding var selectedProjectPath: String
+    @Binding var selectedModel: String
+
+    private static let models: [(id: String, label: String)] = [
+        ("claude-opus-4-7",   "Claude Opus 4.7"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -735,6 +752,21 @@ struct SettingsPanel: View {
                 SecureField("sk-ant-api03-…", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
                 Text("Stored in UserDefaults. Used only to call the Anthropic API.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Model")
+                    .font(.subheadline.weight(.medium))
+                Picker("Model", selection: $selectedModel) {
+                    ForEach(Self.models, id: \.id) { model in
+                        Text(model.label).tag(model.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                Text("Applies to the next message sent.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
