@@ -331,6 +331,12 @@ final class ChatViewModel: ObservableObject {
 
                 let (output, isError) = await executor.execute(name: toolName, input: input)
 
+                guard !Task.isCancelled else {
+                    // Roll back the assistant turn so the next send() starts from a clean history.
+                    conversationHistory.removeLast()
+                    return
+                }
+
                 if let itemsIdx = toolItemIdxBySSE[sseIdx] {
                     items[itemsIdx].setToolResult(output, isError: isError)
                     changeCount += 1

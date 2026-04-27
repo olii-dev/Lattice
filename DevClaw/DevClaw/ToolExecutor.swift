@@ -63,43 +63,47 @@ struct ToolExecutor {
     }()
 
     private func runBash(_ command: String) async -> (String, Bool) {
-        await withCheckedContinuation { continuation in
-            let proc = Process()
-            let outPipe = Pipe()
-            let errPipe = Pipe()
+        let proc = Process()
+        let outPipe = Pipe()
+        let errPipe = Pipe()
 
-            // Inherit the full app environment, then override PATH so that
-            // Homebrew, npm globals, and other developer tools are found without
-            // the agent needing to hard-code or discover paths itself.
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = Self.richPATH
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = Self.richPATH
 
-            proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-            proc.arguments = ["-c", command]
-            proc.environment = env
-            proc.standardOutput = outPipe
-            proc.standardError = errPipe
-            proc.currentDirectoryURL = URL(
-                fileURLWithPath: FileManager.default.currentDirectoryPath
-            )
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", command]
+        proc.environment = env
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        proc.currentDirectoryURL = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath
+        )
 
-            proc.terminationHandler = { p in
-                let stdout = String(
-                    data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                ) ?? ""
-                let stderr = String(
-                    data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                ) ?? ""
-                let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
-                let isError = p.terminationStatus != 0
-                continuation.resume(returning: (combined.isEmpty ? "(no output)" : combined, isError))
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: ("Cancelled", false))
+                    return
+                }
+                proc.terminationHandler = { p in
+                    let stdout = String(
+                        data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+                    ) ?? ""
+                    let stderr = String(
+                        data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+                    ) ?? ""
+                    let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+                    let isError = p.terminationStatus != 0
+                    continuation.resume(returning: (combined.isEmpty ? "(no output)" : combined, isError))
+                }
+                do {
+                    try proc.run()
+                } catch {
+                    continuation.resume(returning: (error.localizedDescription, true))
+                }
             }
-
-            do {
-                try proc.run()
-            } catch {
-                continuation.resume(returning: (error.localizedDescription, true))
-            }
+        } onCancel: {
+            proc.terminate()
         }
     }
 }
