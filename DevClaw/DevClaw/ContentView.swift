@@ -12,6 +12,7 @@ final class ChatViewModel: ObservableObject {
     private let service = AnthropicService()
     private let executor = ToolExecutor()
     private var conversationHistory: [[String: Any]] = []
+    private var agentTask: Task<Void, Never>?
 
     func send(_ text: String, apiKey: String) {
         guard !isRunning, !text.isEmpty, !apiKey.isEmpty else { return }
@@ -20,10 +21,16 @@ final class ChatViewModel: ObservableObject {
         items.append(ChatItem(kind: .user(text)))
         conversationHistory.append(["role": "user", "content": text])
 
-        Task {
+        agentTask = Task {
             defer { isRunning = false }
             await agenticLoop(apiKey: apiKey)
         }
+    }
+
+    func stop() {
+        agentTask?.cancel()
+        agentTask = nil
+        isRunning = false
     }
 
     func clear() {
@@ -86,12 +93,16 @@ final class ChatViewModel: ObservableObject {
                         changeCount += 1
                     }
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 items.append(ChatItem(kind: .assistant(
                     "Error: \(error.localizedDescription)", isStreaming: false
                 )))
                 return
             }
+
+            guard !Task.isCancelled else { return }
 
             // Append assistant turn to history (text + tool_use blocks, in SSE order)
             let assistantContent = finishedBlocks
@@ -219,12 +230,14 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .onSubmit { sendMessage() }
 
-            Button(action: sendMessage) {
+            Button(action: {
+                if viewModel.isRunning { viewModel.stop() } else { sendMessage() }
+            }) {
                 Image(systemName: viewModel.isRunning ? "stop.circle.fill" : "arrow.up.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(canSend ? .primary : .secondary)
+                    .foregroundStyle((canSend || viewModel.isRunning) ? .primary : .secondary)
             }
-            .disabled(!canSend)
+            .disabled(!canSend && !viewModel.isRunning)
             .keyboardShortcut(.return, modifiers: .command)
         }
         .padding(.horizontal, 12)

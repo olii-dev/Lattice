@@ -113,7 +113,7 @@ struct AnthropicService {
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
                     let body: [String: Any] = [
-                        "model": "claude-sonnet-4-7",
+                        "model": "claude-sonnet-4-6",
                         "max_tokens": 10000,
                         "stream": true,
                         "system": [[
