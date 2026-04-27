@@ -207,7 +207,7 @@ struct ContentView: View {
     @StateObject private var viewModel = ChatViewModel()
     @AppStorage("anthropicAPIKey") private var apiKey = ""
     @State private var input = ""
-    @State private var showSettings = false
+    @State private var showSettingsPanel = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -217,22 +217,24 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "key.fill")
+                Button { showSettingsPanel.toggle() } label: {
+                    Image(systemName: showSettingsPanel ? "sidebar.trailing" : "sidebar.right")
                 }
+                .help(showSettingsPanel ? "Hide Settings" : "Show Settings")
             }
             ToolbarItem(placement: .automatic) {
                 Button("Clear") { viewModel.clear() }
                     .disabled(viewModel.items.isEmpty || viewModel.isRunning)
             }
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(apiKey: $apiKey)
+        .inspector(isPresented: $showSettingsPanel) {
+            SettingsPanel(apiKey: $apiKey)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
         }
         .frame(minWidth: 720, minHeight: 520)
         .overlay {
             if apiKey.isEmpty && viewModel.items.isEmpty {
-                SetupPrompt { showSettings = true }
+                SetupPrompt { showSettingsPanel = true }
             }
         }
     }
@@ -471,9 +473,8 @@ struct SetupPrompt: View {
     }
 }
 
-struct SettingsView: View {
+struct SettingsPanel: View {
     @Binding var apiKey: String
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -490,15 +491,10 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
-            }
+            Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 400)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
