@@ -172,10 +172,12 @@ final class ChatViewModel: ObservableObject {
     private var agentTask: Task<Void, Never>?
     private var messageQueue: [QueuedMessage] = []
 
-    func send(_ text: String, apiKey: String, context: ChatContext) {
+    func send(_ text: String, apiKey: String, context: ChatContext, showUserBubble: Bool = true) {
         guard !text.isEmpty, !apiKey.isEmpty else { return }
 
-        items.append(ChatItem(kind: .user(text)))
+        if showUserBubble {
+            items.append(ChatItem(kind: .user(text)))
+        }
 
         if isRunning {
             messageQueue.append(QueuedMessage(text: text, context: context))
@@ -516,6 +518,19 @@ struct ContentView: View {
         guard !text.isEmpty else { return }
         input = ""
         viewModel.send(text, apiKey: apiKey, context: chatContext)
+    }
+
+    private var canBuildAndRun: Bool {
+        !apiKey.isEmpty && !selectedProjectPath.isEmpty && !viewModel.isRunning
+    }
+
+    private func buildAndRun() {
+        let prompt = """
+        Build and run the project located at \(selectedProjectPath).
+        Discover the project and scheme, then build and launch it. \
+        Use xcodebuildmcp for all build and launch operations.
+        """
+        viewModel.send(prompt, apiKey: apiKey, context: chatContext, showUserBubble: false)
     }
 
     private var selectedSimulatorContext: String? {
