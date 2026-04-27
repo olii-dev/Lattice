@@ -113,8 +113,8 @@ struct AnthropicService {
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
                     let body: [String: Any] = [
-                        "model": "claude-sonnet-4-6",
-                        "max_tokens": 30000,
+                        "model": "claude-sonnet-4-7",
+                        "max_tokens": 10000,
                         "stream": true,
                         "system": [[
                             "type": "text",
@@ -210,6 +210,7 @@ struct AnthropicService {
 
                             1. Snapshot the live UI to find elements and coordinates:
                                  xcodebuildmcp ui-automation snapshot-ui --simulator-id <id>
+                                 Always read x, y, width, height before touching an element.
 
                             2. Screenshot to inspect visual state:
                                  xcodebuildmcp ui-automation screenshot --simulator-id <id>
@@ -222,18 +223,68 @@ struct AnthropicService {
                                  xcodebuildmcp ui-automation type-text \\
                                    --simulator-id <id> --text "<text>"
 
-                            5. Swipe or press hardware buttons:
+                            5. Swipe between two points:
                                  xcodebuildmcp ui-automation swipe --simulator-id <id> \\
-                                   --x1 <startX> --y1 <startY> --x2 <endX> --y2 <endY>
-                                 Optional: --duration <ms> --delta <step-size> --pre-delay <ms> --post-delay <ms>
+                                   --x1 <x1> --y1 <y1> --x2 <x2> --y2 <y2>
+
+                            6. Raw touch events (lower-level than tap):
+                                 xcodebuildmcp ui-automation touch --simulator-id <id> -x <x> -y <y> --down
+                                 xcodebuildmcp ui-automation touch --simulator-id <id> -x <x> -y <y> --up
+
+                            7. Hardware buttons:
                                  xcodebuildmcp ui-automation button --simulator-id <id> --button home
 
-                            6. Capture logs for unexpected runtime behaviour:
+                            8. Capture logs to diagnose unexpected behaviour:
                                  xcodebuildmcp simulator start-simulator-log-capture --simulator-id <id>
-                                 # ... trigger the behaviour ...
                                  xcodebuildmcp simulator stop-simulator-log-capture --simulator-id <id>
 
+                            ── WHEN AN INTERACTION DOES NOT WORK ────────────
+                            Follow this escalation in order. Stop as soon as one succeeds.
+
+                            1. Re-snapshot to confirm coordinates — elements shift after layout changes.
+                            2. Retry tap using the accessibility ID instead of coordinates (or vice versa).
+                            3. Try raw touch --down / --up instead of tap.
+                            4. Try a short swipe across the element's bounding box.
+                            5. Capture logs and inspect them for errors or missed events.
+                            6. If all five steps fail: the bug is in the code, not the automation.
+                               Stop retrying UI workarounds. Return to PHASE 3, fix the event
+                               handler or view code, rebuild, and retest from step 1.
+
+                            NEVER invent further interaction strategies beyond step 4.
+                            NEVER use simctl or xcodebuild for UI interaction.
+                            ─────────────────────────────────────────────────
+
+                            After each interaction, screenshot to confirm state changed before continuing.
                             If interaction reveals bugs, return to PHASE 3 and iterate.
+
+                            ════════════════════════════════════════════════
+                            GENERAL ERROR ESCALATION
+                            ════════════════════════════════════════════════
+                            When an error occurs, you get ONE attempt to fix it autonomously.
+                            If it is not resolved after that single attempt, escalate immediately.
+
+                            ONE ATTEMPT:
+                            - Re-read the exact error message and location.
+                            - Make one targeted fix based on what the error literally says.
+                            - Retry. If it passes, continue. If it fails again — escalate now.
+
+                            ESCALATE TO HUMAN immediately after one failed retry:
+                            Stop all tool use and output exactly this block:
+
+                               ⚠️ BLOCKED — human input needed
+                               Error: <exact error message>
+                               Location: <file:line or tool:subcommand>
+                               Tried: <one-line description of the fix attempted>
+                               Hypothesis: <your best understanding of root cause>
+                               Question: <the specific decision or information needed to continue>
+
+                            Then WAIT. Do not call any tools or attempt any further fixes until
+                            the user responds. Treat the user's reply as the new ground truth
+                            and resume from whichever phase is appropriate.
+
+                            NEVER make more than one autonomous fix attempt per error.
+                            NEVER make speculative changes across multiple files to resolve one error.
+                            NEVER silently swallow an error and claim success.
 
                             ════════════════════════════════════════════════
                             PHASE 7 — ARCHIVE
