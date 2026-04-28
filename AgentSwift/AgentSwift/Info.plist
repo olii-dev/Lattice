@@ -2,7 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>SUFeedUR</key>
-	<string>https://github.com:hpennington/agentswift/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>otkUM2qmkM7+Ls/RtdqdwBjRaHiu3ObEXcY3FaOcVK0=</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/hpennington/agentswift/blob/main/appcast.xml</string>
 </dict>
 </plist>
