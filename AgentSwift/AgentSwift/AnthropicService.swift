@@ -99,6 +99,19 @@ struct AnthropicService {
                 ],
                 "required": ["path", "content"]
             ]
+        ],
+        [
+            "name": "open_spec_docs",
+            "description": "Open the proposal.md and design.md for an openspec change in a dedicated window with markdown rendering. Call this to show spec documents to the user.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "change_name": ["type": "string", "description": "The openspec change name (kebab-case)."],
+                    "proposal_path": ["type": "string", "description": "Absolute path to proposal.md."],
+                    "design_path": ["type": "string", "description": "Absolute path to design.md."]
+                ],
+                "required": ["change_name", "proposal_path", "design_path"]
+            ]
         ]
     ]
 
@@ -234,7 +247,19 @@ struct AnthropicService {
                                openspec instructions tasks    --change <name>
                                Use these to guide what to build and in what order.
 
-                            e) Check existing specs before assuming behaviour:
+                            e) Locate the spec files using bash, then open them for review.
+                               This BLOCKS until the user accepts or rejects:
+                               bash: find <project-root> -path "*/openspec/changes/<name>/proposal.md"
+                               bash: find <project-root> -path "*/openspec/changes/<name>/design.md"
+                               open_spec_docs(change_name: <name>,
+                                              proposal_path: <absolute-path>,
+                                              design_path: <absolute-path>)
+                               - Tool returns "accepted": proceed to Phase 1.
+                               - Tool returns "rejected": STOP. Ask the user what changes
+                                 they want to the proposal or design. Do not write any code
+                                 until the spec has been revised and accepted.
+
+                            f) Check existing specs before assuming behaviour:
                                openspec spec list
                                openspec spec show <spec-id>
 
