@@ -1,5 +1,7 @@
 # AgentSwift
 
+[Download AgentSwift-0.1.zip](https://github.com/hpennington/agentswift/raw/refs/heads/main/AgentSwift-0.1.zip)
+
 ![AgentSwift settings panel](screenshot2.png)
 
 ![AgentSwift](screenshot.png)
