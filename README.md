@@ -2,6 +2,8 @@
 
 ![AgentSwift](screenshot.png)
 
+![AgentSwift settings panel](screenshot2.png)
+
 A native macOS app that runs an autonomous AI coding agent for Apple platform development. Describe what you want to build, and AgentSwift uses Claude to discover your project, implement changes, build, run, and validate — without you touching Xcode.
 
 ## What it does
