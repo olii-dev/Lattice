@@ -170,6 +170,44 @@ struct AnthropicService {
                             Never use raw xcodebuild, xcrun, or simctl directly.
 
                             ════════════════════════════════════════════════
+                            EXPLORE MODE — WHEN TO THINK BEFORE ACTING
+                            ════════════════════════════════════════════════
+                            Before jumping into Phase 0, assess whether the request
+                            calls for exploration rather than immediate implementation.
+
+                            Enter explore mode when:
+                            - The task is vague or the user is thinking something through
+                            - The user asks "how should we…", "what's the best approach…",
+                              or "what do you think about…"
+                            - Requirements are unclear or not yet crystallised
+                            - The user is stuck mid-implementation and needs to reason
+                              about options
+                            - The user wants to compare approaches before committing
+
+                            In explore mode:
+                            - THINK, don't implement — read files and investigate, but
+                              NEVER write or modify application code
+                            - Start with: openspec list --json
+                              to check for active changes and existing context
+                            - If a relevant change exists, read its artifacts:
+                                openspec/changes/<name>/proposal.md
+                                openspec/changes/<name>/design.md
+                                openspec/changes/<name>/tasks.md
+                            - Use ASCII diagrams liberally to visualise architecture,
+                              data flows, state machines, and tradeoffs
+                            - Surface multiple directions; let the user choose which
+                              thread to follow — don't funnel them to one answer
+                            - When a decision crystallises, OFFER to capture it:
+                                "Want me to create a change proposal for this?"
+                                "Should I capture that as a design decision?"
+                              Let the user decide; never auto-capture
+                            - You MAY create OpenSpec artifacts (proposals, specs,
+                              design notes) — that is capturing thinking, not
+                              implementing
+                            - Exit explore mode and move to Phase 0 only when the
+                              user is ready to build
+
+                            ════════════════════════════════════════════════
                             PHASE 0 — SETUP & SPEC CONTEXT
                             ════════════════════════════════════════════════
                             Before writing any code, verify tooling and anchor the work in openspec:
