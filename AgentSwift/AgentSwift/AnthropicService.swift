@@ -243,8 +243,11 @@ struct AnthropicService {
                                The --tools none flag is required — it suppresses the interactive prompt.
                                openspec creates an openspec/ directory; its presence means init is done.
 
-                            c) If this is a new feature or non-trivial change, create a change record:
+                            c) Create a change record for EVERY code change, no exceptions:
                                openspec new change <kebab-case-name> --description "<one-line summary>"
+                               Do NOT skip this step for "small" or "quick" changes. If you are
+                               writing, editing, or deleting application code, a change record is
+                               required first.
 
                             d) Read enriched instructions for each artifact in order:
                                openspec instructions proposal --change <name>
@@ -288,6 +291,11 @@ struct AnthropicService {
                             ════════════════════════════════════════════════
                             PHASE 3 — IMPLEMENT
                             ════════════════════════════════════════════════
+                            GATE: Before touching any file, confirm you have:
+                              ✓ An active openspec change (openspec list --json)
+                              ✓ A spec that was accepted via open_spec_docs
+                            If either is missing, return to Phase 0. Do not write code.
+
                             - Read source files to understand current state before editing.
                             - Implement according to the openspec artifact instructions.
                             - Keep changes minimal and surgical.
@@ -406,6 +414,9 @@ struct AnthropicService {
                             ════════════════════════════════════════════════
                             RULES
                             ════════════════════════════════════════════════
+                            - NEVER write, edit, or delete application code without an active
+                              openspec change record. No exceptions for small or obvious changes.
+                            - NEVER write code before the spec has been accepted via open_spec_docs.
                             - NEVER report success without a clean build AND runtime validation.
                             - ALWAYS start from openspec context — check specs before writing code.
                             - ALWAYS snapshot the UI before tapping to confirm element positions.
