@@ -244,62 +244,89 @@ final class ChatViewModel: ObservableObject {
             var finishedBlocks: [Int: ContentBlock] = [:]
             var stopReason = "end_turn"
 
-            do {
-                for try await chunk in service.stream(
-                    messages: conversationHistory,
-                    apiKey: apiKey,
-                    context: context
-                ) {
-                    switch chunk {
+            let itemsCountBeforeStream = items.count
+            var retryDelay: UInt64 = 1_000_000_000
+            var networkAttempt = 0
 
-                    case .textDelta(let delta):
-                        if let i = streamingTextIdx {
-                            items[i].appendText(delta)
-                        } else {
-                            let item = ChatItem(kind: .assistant(delta, isStreaming: true))
-                            streamingTextIdx = items.count
-                            items.append(item)
-                        }
-                        changeCount += 1
-
-                    case .toolCallAnnounced(let sseIdx, _, let name):
-                        if let i = streamingTextIdx {
-                            items[i].finalizeText()
-                            streamingTextIdx = nil
-                        }
-                        let item = ChatItem(kind: .tool(
-                            name: name, input: "", output: nil, isError: false, isRunning: true
-                        ))
-                        toolItemIdxBySSE[sseIdx] = items.count
-                        items.append(item)
-                        changeCount += 1
-
-                    case .done(let reason, let blocks):
-                        stopReason = reason
-                        finishedBlocks = blocks
-
-                        if let i = streamingTextIdx {
-                            items[i].finalizeText()
-                        }
-
-                        // Fill in tool inputs now that they're fully streamed
-                        for (sseIdx, itemsIdx) in toolItemIdxBySSE {
-                            if let block = blocks[sseIdx] {
-                                items[itemsIdx].setToolInput(
-                                    displayInput(name: block.toolName ?? "", json: block.toolInputJSON ?? "")
-                                )
-                            }
-                        }
-                        changeCount += 1
-                    }
+            networkRetry: while true {
+                if networkAttempt > 0 {
+                    items.removeSubrange(itemsCountBeforeStream...)
+                    streamingTextIdx = nil
+                    toolItemIdxBySSE = [:]
+                    finishedBlocks = [:]
+                    stopReason = "end_turn"
+                    changeCount += 1
+                    try? await Task.sleep(nanoseconds: retryDelay)
+                    retryDelay = min(retryDelay * 2, 8_000_000_000)
+                    guard !Task.isCancelled else { return }
                 }
-            } catch is CancellationError {
-                return
-            } catch {
-                items.append(ChatItem(kind: .assistant(
-                    "Error: \(error.localizedDescription)", isStreaming: false
-                )))
-                return
+
+                do {
+                    for try await chunk in service.stream(
+                        messages: conversationHistory,
+                        apiKey: apiKey,
+                        context: context
+                    ) {
+                        switch chunk {
+
+                        case .textDelta(let delta):
+                            if let i = streamingTextIdx {
+                                items[i].appendText(delta)
+                            } else {
+                                let item = ChatItem(kind: .assistant(delta, isStreaming: true))
+                                streamingTextIdx = items.count
+                                items.append(item)
+                            }
+                            changeCount += 1
+
+                        case .toolCallAnnounced(let sseIdx, _, let name):
+                            if let i = streamingTextIdx {
+                                items[i].finalizeText()
+                                streamingTextIdx = nil
+                            }
+                            let item = ChatItem(kind: .tool(
+                                name: name, input: "", output: nil, isError: false, isRunning: true
+                            ))
+                            toolItemIdxBySSE[sseIdx] = items.count
+                            items.append(item)
+                            changeCount += 1
+
+                        case .done(let reason, let blocks):
+                            stopReason = reason
+                            finishedBlocks = blocks
+
+                            if let i = streamingTextIdx {
+                                items[i].finalizeText()
+                            }
+
+                            // Fill in tool inputs now that they're fully streamed
+                            for (sseIdx, itemsIdx) in toolItemIdxBySSE {
+                                if let block = blocks[sseIdx] {
+                                    items[itemsIdx].setToolInput(
+                                        displayInput(name: block.toolName ?? "", json: block.toolInputJSON ?? "")
+                                    )
+                                }
+                            }
+                            changeCount += 1
+                        }
+                    }
+                    break networkRetry
+                } catch is CancellationError {
+                    return
+                } catch let err as URLError {
+                    networkAttempt += 1
+                    if networkAttempt > 3 {
+                        items.append(ChatItem(kind: .assistant(
+                            "Error: \(err.localizedDescription)", isStreaming: false
+                        )))
+                        return
+                    }
+                } catch {
+                    items.append(ChatItem(kind: .assistant(
+                        "Error: \(error.localizedDescription)", isStreaming: false
+                    )))
+                    return
+                }
             }
 
             guard !Task.isCancelled else { return }
