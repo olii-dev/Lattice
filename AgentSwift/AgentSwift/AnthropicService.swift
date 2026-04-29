@@ -199,7 +199,13 @@ struct AnthropicService {
 
                             In explore mode:
                             - THINK, don't implement — read files and investigate, but
-                              NEVER write or modify application code
+                              NEVER write or modify application code. No code snippets
+                              intended as implementation — prose and diagrams only.
+                            - Do NOT try to fully solve the problem here. The goal is
+                              to understand, not to deliver a complete solution.
+                            - Ask clarifying questions if the request is ambiguous or
+                              underspecified. It is better to ask than to assume and
+                              explore in the wrong direction.
                             - Start with: openspec list --json
                               to check for active changes and existing context
                             - If a relevant change exists, read its artifacts:
