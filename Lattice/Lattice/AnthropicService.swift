@@ -56,6 +56,8 @@ func toolResultMessage(toolUseId: String, content: String, isError: Bool) -> [St
 
 enum StreamChunk: Sendable {
     case textDelta(String)
+    /// OpenAI-compatible providers may stream extended reasoning separately from `content`.
+    case reasoningDelta(String)
     case toolCallAnnounced(index: Int, id: String, name: String)
     case done(stopReason: String, blocks: [Int: ContentBlock])
 }
@@ -87,7 +89,7 @@ struct SSEDelta: Decodable {
 enum StreamError: LocalizedError {
     case apiError(String)
     var errorDescription: String? {
-        if case .apiError(let msg) = self { return msg }
+        if case .apiError(let msg) = self { return APIErrorFormatting.friendlyMessage(from: msg) }
         return nil
     }
 }

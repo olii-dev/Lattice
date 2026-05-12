@@ -174,6 +174,7 @@ struct LLMService {
                 do {
                     var request = URLRequest(url: LLMProvider.anthropic.endpoint)
                     request.httpMethod = "POST"
+                    request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -220,8 +221,11 @@ struct LLMService {
                             case "text":
                                 blocks[idx] = .text("")
                             case "tool_use":
-                                blocks[idx] = .toolUse(id: cb.id ?? "", name: cb.name ?? "")
-                                continuation.yield(.toolCallAnnounced(index: idx, id: cb.id ?? "", name: cb.name ?? ""))
+                                let id = cb.id ?? ""
+                                let name = cb.name ?? ""
+                                guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
+                                blocks[idx] = .toolUse(id: id, name: name)
+                                continuation.yield(.toolCallAnnounced(index: idx, id: id, name: name))
                             default: break
                             }
 
@@ -271,6 +275,16 @@ struct LLMService {
         return ["max_tokens": 16_384]
     }
 
+    private func openAIReasoningFragment(from delta: [String: Any]) -> String? {
+        if let s = delta["reasoning"] as? String, !s.isEmpty { return s }
+        if let s = delta["reasoning_content"] as? String, !s.isEmpty { return s }
+        if let obj = delta["reasoning"] as? [String: Any] {
+            if let s = obj["text"] as? String, !s.isEmpty { return s }
+            if let s = obj["content"] as? String, !s.isEmpty { return s }
+        }
+        return nil
+    }
+
     private func streamOpenAI(
         messages: [[String: Any]],
         apiKey: String,
@@ -282,6 +296,7 @@ struct LLMService {
                 do {
                     var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, context: context))
                     request.httpMethod = "POST"
+                    request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
@@ -326,6 +341,10 @@ struct LLMService {
                             stopReason = "tool_use"
                         } else if let reason = choice["finish_reason"] as? String, !reason.isEmpty {
                             stopReason = reason
+                        }
+
+                        if let reasoningFragment = openAIReasoningFragment(from: delta), !reasoningFragment.isEmpty {
+                            continuation.yield(.reasoningDelta(reasoningFragment))
                         }
 
                         if let content = delta["content"] as? String, !content.isEmpty {
@@ -449,7 +468,7 @@ struct LLMService {
         1. Discover the project: xcodebuildmcp macos discover-projects --directory <dir>
         2. List schemes: xcodebuildmcp macos list-schemes --project-path <path>
         3. Implement changes using read_file and write_file
-        4. Build: xcodebuildmcp simulator build-and-run --scheme <scheme> --project-path <path> --simulator-id <id>
+        4. Build: choose destination using ACTIVE CONTEXT. Use simulator/device/mac destination flags that match the selected run target.
         5. On build errors: fix and rebuild. Never skip a red build.
 
         RULES:
@@ -457,6 +476,10 @@ struct LLMService {
         - Keep changes minimal and surgical.
         - After writing code, always build to verify.
         - When an error occurs, you get ONE attempt to fix it. If it fails again, escalate to the user.
+        - Never default to a simulator when a device or My Mac destination is provided in ACTIVE CONTEXT.
+        - Reply in plain text only. Do not use markdown syntax at all.
+        - Never output markdown symbols for formatting, including: *, #, _, `, >, -, or numbered list prefixes.
+        - Write short compact paragraphs with minimal whitespace.
         """
 
         if let prefix = context.messagePrefix {
