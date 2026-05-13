@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// Per-project append-only log for the Console sheet (last ~200 lines each).
+/// Per-project append-only log for the Console sheet (last ~200 lines each), persisted across launches.
 @MainActor
 final class LatticeConsoleStore: ObservableObject {
     @Published private(set) var lines: [String] = []
@@ -17,10 +17,37 @@ final class LatticeConsoleStore: ObservableObject {
         return f
     }()
 
+    private static func storageKey(projectFingerprint: String) -> String {
+        "latticeConsoleLinesV1.\(projectFingerprint)"
+    }
+
+    private func loadBucketFromDiskIfNeeded(projectFingerprint key: String) {
+        guard !key.isEmpty else { return }
+        if buckets[key] != nil { return }
+        let udKey = Self.storageKey(projectFingerprint: key)
+        guard let data = UserDefaults.standard.data(forKey: udKey),
+              let decoded = try? JSONDecoder().decode([String].self, from: data),
+              !decoded.isEmpty
+        else { return }
+        buckets[key] = decoded
+    }
+
+    private func persistBucket(projectFingerprint key: String) {
+        guard !key.isEmpty else { return }
+        let lines = buckets[key] ?? []
+        let udKey = Self.storageKey(projectFingerprint: key)
+        if lines.isEmpty {
+            UserDefaults.standard.removeObject(forKey: udKey)
+        } else if let data = try? JSONEncoder().encode(lines) {
+            UserDefaults.standard.set(data, forKey: udKey)
+        }
+    }
+
     func setVisibleProject(path: String) {
         let t = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = t.isEmpty ? "" : ChatSessionPersistence.projectStorageFingerprint(path: t)
         visibleKey = key
+        loadBucketFromDiskIfNeeded(projectFingerprint: key)
         lines = buckets[key] ?? []
     }
 
@@ -28,6 +55,7 @@ final class LatticeConsoleStore: ObservableObject {
         let t = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         let key = ChatSessionPersistence.projectStorageFingerprint(path: t)
+        loadBucketFromDiskIfNeeded(projectFingerprint: key)
         var bucket = buckets[key] ?? []
         let ts = formatter.string(from: Date())
         let prefix = "[\(ts)] [\(category)]"
@@ -36,6 +64,7 @@ final class LatticeConsoleStore: ObservableObject {
         }
         trimBucket(&bucket)
         buckets[key] = bucket
+        persistBucket(projectFingerprint: key)
         if key == visibleKey {
             lines = bucket
         }
@@ -45,11 +74,13 @@ final class LatticeConsoleStore: ObservableObject {
         let t = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         let key = ChatSessionPersistence.projectStorageFingerprint(path: t)
+        loadBucketFromDiskIfNeeded(projectFingerprint: key)
         var bucket = buckets[key] ?? []
         let ts = formatter.string(from: Date())
         bucket.append("[\(ts)] [\(category)] \(line)")
         trimBucket(&bucket)
         buckets[key] = bucket
+        persistBucket(projectFingerprint: key)
         if key == visibleKey {
             lines = bucket
         }
@@ -60,6 +91,7 @@ final class LatticeConsoleStore: ObservableObject {
         guard !t.isEmpty else { return }
         let key = ChatSessionPersistence.projectStorageFingerprint(path: t)
         buckets[key] = []
+        persistBucket(projectFingerprint: key)
         if key == visibleKey {
             lines = []
         }

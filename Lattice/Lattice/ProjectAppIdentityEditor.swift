@@ -87,6 +87,14 @@ enum ProjectAppIdentityEditor {
         )
     }
 
+    /// Resolved main-target `PRODUCT_BUNDLE_IDENTIFIER` (for inspector / UI).
+    static func resolvedBundleIdentifier(projectRoot: URL) async throws -> String? {
+        let settings = try await buildSettingsDump(projectRoot: projectRoot)
+        let raw = value(for: "PRODUCT_BUNDLE_IDENTIFIER", in: settings) ?? ""
+        let s = stripQuotes(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        return s.isEmpty ? nil : s
+    }
+
     /// Writes into `project.pbxproj` and, when `INFOPLIST_FILE` exists on disk, updates that plist too.
     static func save(projectRoot: URL, identity: ProjectAppIdentity) async throws {
         let settings = try await buildSettingsDump(projectRoot: projectRoot)

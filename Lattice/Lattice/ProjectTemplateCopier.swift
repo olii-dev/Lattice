@@ -79,16 +79,15 @@ enum ProjectTemplateCopier {
     static func createProject(
         platform: ProjectTemplatePlatform,
         productName rawProduct: String,
-        organizationIdentifier rawOrg: String,
-        parentDirectory: URL
+        parentDirectory: URL,
+        appIcon: NSImage? = nil
     ) throws -> URL {
         guard let product = sanitizedProductName(rawProduct) else {
             throw ProjectTemplateCopierError.invalidProductName
         }
-        guard let org = normalizedOrgIdentifier(rawOrg) else {
-            throw ProjectTemplateCopierError.invalidOrganizationIdentifier
-        }
-        let bundleId = bundleIdentifier(org: org, product: product)
+        let org = "com.lattice"
+        let slug = product.lowercased()
+        let bundleId = "\(org).\(slug)"
 
         guard let templatesRoot = Bundle.main.url(forResource: "ProjectTemplates", withExtension: nil) else {
             throw ProjectTemplateCopierError.missingTemplatesInBundle
@@ -118,7 +117,11 @@ enum ProjectTemplateCopier {
         guard let xcodeproj = findXcodeproj(in: destRoot) else {
             throw ProjectTemplateCopierError.copyFailed("Could not find an .xcodeproj after creating the template.")
         }
-        return xcodeproj.deletingLastPathComponent()
+        let root = xcodeproj.deletingLastPathComponent()
+        if let icon = appIcon {
+            try ProjectAppIconWriter.write(image: icon, projectRoot: root)
+        }
+        return root
     }
 
     private static func findXcodeproj(in folder: URL) -> URL? {

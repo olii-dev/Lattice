@@ -1,5 +1,33 @@
 import Foundation
 
+/// Snapshot for reverting a `write_file` tool call (best-effort; bash and other tools are not undone).
+struct LatticeWriteFileUndo: Equatable, Sendable {
+    let path: String
+    /// `nil` means the path did not exist before the write (undo deletes the file).
+    let priorData: Data?
+
+    static func capture(path: String) -> LatticeWriteFileUndo {
+        if FileManager.default.fileExists(atPath: path),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            return LatticeWriteFileUndo(path: path, priorData: data)
+        }
+        return LatticeWriteFileUndo(path: path, priorData: nil)
+    }
+
+    func apply() {
+        let url = URL(fileURLWithPath: path)
+        if let data = priorData {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? data.write(to: url, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+}
+
 struct ToolExecutor {
     func execute(name: String, input: [String: Any]) async -> (output: String, isError: Bool) {
         switch name {

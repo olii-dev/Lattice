@@ -9,12 +9,14 @@
 /* Begin PBXBuildFile section */
 		A10000010000000000000001 /* LatticeTplAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000001 /* LatticeTplAppApp.swift */; };
 		A10000010000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000002 /* ContentView.swift */; };
+		A10000010000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000003 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000030000000000000001 /* LatticeTplApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LatticeTplApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000020000000000000001 /* LatticeTplAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatticeTplAppApp.swift; sourceTree = "<group>"; };
 		A10000020000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A10000020000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -26,6 +28,17 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A100000B0000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXGroup section */
 		A10000050000000000000001 = {
@@ -39,6 +52,7 @@
 		A10000050000000000000002 /* LatticeTplApp */ = {
 			isa = PBXGroup;
 			children = (
+				A10000020000000000000003 /* Assets.xcassets */,
 				A10000020000000000000001 /* LatticeTplAppApp.swift */,
 				A10000020000000000000002 /* ContentView.swift */,
 			);
@@ -61,6 +75,7 @@
 			buildConfigurationList = A10000090000000000000001 /* Build configuration list for PBXNativeTarget "LatticeTplApp" */;
 			buildPhases = (
 				A10000070000000000000001 /* Sources */,
+				A100000B0000000000000001 /* Resources */,
 				A10000040000000000000001 /* Frameworks */,
 			);
 			buildRules = (
@@ -150,6 +165,7 @@
 		A100000A0000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
@@ -175,6 +191,7 @@
 		A100000A0000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";

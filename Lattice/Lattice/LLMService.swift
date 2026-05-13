@@ -69,7 +69,26 @@ enum LLMProvider: String, CaseIterable, Identifiable {
 // MARK: - Unified streaming service
 
 struct LLMService {
-    private let tools: [[String: Any]] = [
+    private static let providerOverloadMaxAttempts = 4
+    private static let providerOverloadRetryDelayNanoseconds: UInt64 = 15 * 1_000_000_000
+
+    private static func shouldRetryAfterTransientProviderFailure(_ error: Error) -> Bool {
+        if let e = error as? StreamError, case .apiError(let raw) = e {
+            let t = raw.lowercased()
+            if t.contains("1305") { return true }
+            if t.contains("overloaded") { return true }
+            if t.contains("temporarily overloaded") { return true }
+            if t.contains("rate_limit") || t.contains("rate limit") { return true }
+        }
+        let d = error.localizedDescription.lowercased()
+        return d.contains("1305")
+            || d.contains("overloaded")
+            || d.contains("temporarily overloaded")
+            || d.contains("rate_limit")
+            || d.contains("rate limit")
+    }
+
+    private static let latticeToolDefinitions: [[String: Any]] = [
         [
             "name": "bash",
             "description": "Execute a bash shell command and return stdout + stderr.",
@@ -105,6 +124,8 @@ struct LLMService {
             ]
         ]
     ]
+
+    private var tools: [[String: Any]] { Self.latticeToolDefinitions }
 
     private var openAITools: [[String: Any]] {
         tools.map { tool in
@@ -171,7 +192,8 @@ struct LLMService {
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
-                do {
+                for attempt in 1...Self.providerOverloadMaxAttempts {
+                    do {
                     var request = URLRequest(url: LLMProvider.anthropic.endpoint)
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
@@ -185,7 +207,7 @@ struct LLMService {
                         "stream": true,
                         "system": [[
                             "type": "text",
-                            "text": systemPrompt(context: context),
+                            "text": Self.latticeSystemPrompt(for: context),
                             "cache_control": ["type": "ephemeral"]
                         ]],
                         "tools": tools,
@@ -254,8 +276,17 @@ struct LLMService {
 
                     continuation.yield(.done(stopReason: stopReason, blocks: blocks))
                     continuation.finish()
-                } catch {
+                    return
+                    } catch {
+                    let canRetry = attempt < Self.providerOverloadMaxAttempts
+                        && Self.shouldRetryAfterTransientProviderFailure(error)
+                    if canRetry {
+                        try await Task.sleep(nanoseconds: Self.providerOverloadRetryDelayNanoseconds)
+                        continue
+                    }
                     continuation.finish(throwing: error)
+                    return
+                }
                 }
             }
         }
@@ -293,7 +324,8 @@ struct LLMService {
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
-                do {
+                for attempt in 1...Self.providerOverloadMaxAttempts {
+                    do {
                     var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, context: context))
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
@@ -375,8 +407,17 @@ struct LLMService {
 
                     continuation.yield(.done(stopReason: stopReason, blocks: blocks))
                     continuation.finish()
-                } catch {
+                    return
+                    } catch {
+                    let canRetry = attempt < Self.providerOverloadMaxAttempts
+                        && Self.shouldRetryAfterTransientProviderFailure(error)
+                    if canRetry {
+                        try await Task.sleep(nanoseconds: Self.providerOverloadRetryDelayNanoseconds)
+                        continue
+                    }
                     continuation.finish(throwing: error)
+                    return
+                }
                 }
             }
         }
@@ -384,7 +425,7 @@ struct LLMService {
 
     private func convertToOpenAIMessages(_ messages: [[String: Any]], context: ChatContext) -> [[String: Any]] {
         var result: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt(context: context)]
+            ["role": "system", "content": Self.latticeSystemPrompt(for: context)]
         ]
 
         for msg in messages {
@@ -456,7 +497,8 @@ struct LLMService {
 
     // MARK: - System prompt
 
-    private func systemPrompt(context: ChatContext) -> String {
+    /// Shared instruction block (Anthropic `system` vs OpenAI first `system` message).
+    static func latticeSystemPrompt(for context: ChatContext) -> String {
         var prompt = """
         You are Lattice, an autonomous Apple platform coding agent. You have bash, \
         file read, and file write tools.
@@ -480,6 +522,16 @@ struct LLMService {
         - Reply in plain text only. Do not use markdown syntax at all.
         - Never output markdown symbols for formatting, including: *, #, _, `, >, -, or numbered list prefixes.
         - Write short compact paragraphs with minimal whitespace.
+        - For apps created from Lattice’s “New project” flow, bundle identifiers follow com.lattice.<lowercased product slug> unless the user or Xcode project already specifies a different bundle ID. Prefer that pattern when you invent or adjust bundle IDs for those projects.
+
+        SWIFTUI AND NATIVE UI (follow Human Interface Guidelines):
+        - Prefer standard SwiftUI containers and controls: NavigationStack or NavigationSplitView, Form, List, Section, toolbar items, Menu, Button(role:), Toggle, LabeledContent, GroupBox.
+        - Prefer semantic styles over fixed styling: Font.body / title / headline; foregroundStyle(.primary) and .secondary; default padding; reserve explicit point sizes only for icons or tight toolbars.
+        - Use SF Symbols with hierarchical or palette rendering where appropriate; avoid custom emoji-styled icons for system actions.
+        - Use Color.accentColor and system semantic colors; do not hard-code blues/grays that fight system appearance or Dark Mode.
+        - Use materials (ultraThinMaterial, etc.) sparingly—one layer or Apple-standard patterns—not stacked full-window blur-on-blur.
+        - Support Dynamic Type: avoid clipping text; prefer multiline titles where needed.
+        - When generating new screens, default to unadorned layouts that read as system UI before adding decoration.
         """
 
         if let prefix = context.messagePrefix {
@@ -500,6 +552,19 @@ struct LLMService {
         return prompt
     }
 
+    /// Rough token cost for Lattice instructions (system) plus tool schemas (what each API call carries besides `messages`).
+    static func approximateLatticeInstructionPayloadTokens(context: ChatContext) -> (system: Int, tools: Int) {
+        let sys = latticeSystemPrompt(for: context)
+        let systemTokens = LatticeContextEstimator.approximateTokensFromText(sys)
+        let toolBytes = (try? JSONSerialization.data(withJSONObject: latticeToolDefinitions))?.count ?? 0
+        let toolsTokens = max(80, (toolBytes * 11) >> 2)
+        return (systemTokens, toolsTokens)
+    }
+
+    private func systemPrompt(context: ChatContext) -> String {
+        Self.latticeSystemPrompt(for: context)
+    }
+
     // MARK: - Helpers
 
     private func parseAnthropicError(_ data: Data) -> String? {
@@ -512,23 +577,26 @@ struct LLMService {
         apiKey: String,
         model: String,
         provider: LLMProvider,
-        zaiUseCodingEndpoint: Bool = true
+        zaiUseCodingEndpoint: Bool = true,
+        maxOutputTokens: Int = 512
     ) async throws -> String {
+        let cap = min(8192, max(64, maxOutputTokens))
         switch provider {
         case .anthropic:
-            return try await completeAnthropic(prompt: prompt, apiKey: apiKey, model: model)
+            return try await completeAnthropic(prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap)
         case .openAI, .zai:
             return try await completeOpenAI(
                 prompt: prompt,
                 apiKey: apiKey,
                 model: model,
                 provider: provider,
-                zaiUseCodingEndpoint: zaiUseCodingEndpoint
+                zaiUseCodingEndpoint: zaiUseCodingEndpoint,
+                maxTokens: cap
             )
         }
     }
 
-    private func completeAnthropic(prompt: String, apiKey: String, model: String) async throws -> String {
+    private func completeAnthropic(prompt: String, apiKey: String, model: String, maxTokens: Int) async throws -> String {
         var request = URLRequest(url: LLMProvider.anthropic.endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -537,7 +605,7 @@ struct LLMService {
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 512,
+            "max_tokens": maxTokens,
             "messages": [["role": "user", "content": prompt]]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -560,18 +628,25 @@ struct LLMService {
         apiKey: String,
         model: String,
         provider: LLMProvider,
-        zaiUseCodingEndpoint: Bool
+        zaiUseCodingEndpoint: Bool,
+        maxTokens: Int
     ) async throws -> String {
         var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, zaiUseCodingEndpoint: zaiUseCodingEndpoint))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
-            "max_tokens": 512,
+            "stream": false,
             "messages": [["role": "user", "content": prompt]]
         ]
+        let m = model.lowercased()
+        if provider == .openAI, m.hasPrefix("gpt-5") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
+            body["max_completion_tokens"] = maxTokens
+        } else {
+            body["max_tokens"] = maxTokens
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -582,11 +657,11 @@ struct LLMService {
         struct Response: Decodable {
             struct Choice: Decodable {
                 struct Message: Decodable { let content: String? }
-                let message: Message
+                let message: Message?
             }
             let choices: [Choice]
         }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        return decoded.choices.first?.message.content ?? ""
+        return decoded.choices.first?.message?.content ?? ""
     }
 }

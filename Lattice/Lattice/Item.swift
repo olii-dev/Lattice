@@ -161,6 +161,13 @@ enum ChatSessionPersistence {
         fingerprint(for: path)
     }
 
+    /// Same path normalization as storage keys: empty input yields empty string (not `__no_project__`).
+    static func canonicalProjectPath(_ path: String) -> String {
+        let t = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+        return URL(fileURLWithPath: (t as NSString).standardizingPath).path
+    }
+
     private static func itemsKey(forProjectPath path: String) -> String {
         "latticeSessionChatItemsV2.\(fingerprint(for: path))"
     }
@@ -223,6 +230,36 @@ enum ChatSessionPersistence {
     static func clear(projectPath: String) {
         UserDefaults.standard.removeObject(forKey: itemsKey(forProjectPath: projectPath))
         UserDefaults.standard.removeObject(forKey: historyKey(forProjectPath: projectPath))
+    }
+
+    // MARK: - Snapshots (chat history restore)
+
+    /// Encodes persistable chat rows (same shape as `saveItems`, without `.working`).
+    static func encodeItemsSnapshot(_ items: [ChatItem]) -> Data? {
+        let rows = items.compactMap { item -> PersistedChatItem? in
+            if case .working = item.kind { return nil }
+            return PersistedChatItem(chatItem: item)
+        }
+        return try? JSONEncoder().encode(rows)
+    }
+
+    static func decodeItemsSnapshot(_ data: Data) -> [ChatItem]? {
+        guard let rows = try? JSONDecoder().decode([PersistedChatItem].self, from: data) else { return nil }
+        return rows.map { $0.toChatItem() }
+    }
+
+    static func encodeHistorySnapshot(_ history: [[String: Any]]) -> Data? {
+        guard JSONSerialization.isValidJSONObject(history),
+              let data = try? JSONSerialization.data(withJSONObject: history)
+        else { return nil }
+        return data
+    }
+
+    static func decodeHistorySnapshot(_ data: Data) -> [[String: Any]]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data),
+              let arr = obj as? [[String: Any]]
+        else { return nil }
+        return arr
     }
 
     private static func environmentIntroKey(forProjectPath path: String) -> String {
