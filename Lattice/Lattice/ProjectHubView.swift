@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// Hub: welcome + open/new project; searchable recents on the trailing side.
+/// Full-window project hub: hero + actions + searchable recents.
 struct ProjectHubView: View {
     @ObservedObject var recentStore: RecentProjectsStore
     @Binding var selectedProjectPath: String
     @Binding var showProjectHub: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
     @State private var showNewProject = false
 
@@ -23,9 +23,9 @@ struct ProjectHubView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let wide = geo.size.width > 780
+            let wide = geo.size.width > 820
             ZStack {
-                hubBackdrop
+                LatticeWindowBackdrop()
                     .ignoresSafeArea()
 
                 Rectangle()
@@ -34,25 +34,17 @@ struct ProjectHubView: View {
 
                 Group {
                     if wide {
-                        HStack(alignment: .center, spacing: 24) {
-                            leadingColumn
-                                .frame(width: min(460, geo.size.width * 0.46), alignment: .leading)
-                            trailingColumn
-                                .frame(width: min(360, geo.size.width * 0.38))
-                                .frame(maxHeight: .infinity, alignment: .center)
-                        }
-                        .frame(maxWidth: 940, maxHeight: .infinity, alignment: .center)
+                        wideHubLayout(maxWidth: min(980, geo.size.width - 48))
                     } else {
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 24) {
-                                leadingColumn
-                                trailingColumn
-                            }
-                            .padding(20)
+                            compactHubLayout
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 24)
                         }
+                        .scrollIndicators(.hidden)
                     }
                 }
-                .padding(wide ? 28 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .sheet(isPresented: $showNewProject) {
@@ -64,181 +56,126 @@ struct ProjectHubView: View {
         }
     }
 
-    private var hubBackdrop: some View {
-        Group {
-            if reduceMotion {
-                Color.clear
-            } else {
-                LinearGradient(
-                    colors: [
-                        Color.accentColor.opacity(0.1),
-                        Color.clear,
-                        Color.teal.opacity(0.08),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
+    // MARK: - Layouts
+
+    private func wideHubLayout(maxWidth: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            HubHeroColumn(
+                welcomeMark: latticeWelcomeMark(size: 58),
+                onOpenFolder: chooseProjectFolder,
+                onNewProject: { showNewProject = true }
+            )
+            .padding(.leading, 32)
+            .padding(.trailing, 22)
+            .padding(.vertical, 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HubColumnDivider()
+
+            HubRecentsColumn(
+                search: $search,
+                filteredRecents: filteredRecents,
+                relativeTime: relativeTime,
+                onSelect: { project in
+                    selectedProjectPath = project.path
+                    recentStore.add(path: project.path)
+                    showProjectHub = false
+                },
+                onRemove: { recentStore.remove($0) }
+            )
+            .padding(.leading, 22)
+            .padding(.trailing, 30)
+            .padding(.vertical, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(width: maxWidth, alignment: .center)
+        .frame(maxHeight: min(620, 640))
+        .background(HubShellBackground())
+        .clipShape(RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous)
+                .strokeBorder(HubMetrics.shellStroke(colorScheme: colorScheme), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.45 : 0.12), radius: 40, y: 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var leadingColumn: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Spacer(minLength: 0)
+    private var compactHubLayout: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HubHeroColumn(
+                welcomeMark: latticeWelcomeMark(size: 52),
+                onOpenFolder: chooseProjectFolder,
+                onNewProject: { showNewProject = true }
+            )
+            .padding(26)
 
-            HStack(spacing: 14) {
+            Rectangle()
+                .fill(HubMetrics.hairlineFill(colorScheme: colorScheme))
+                .frame(height: 1)
+                .padding(.horizontal, 8)
+
+            HubRecentsColumn(
+                search: $search,
+                filteredRecents: filteredRecents,
+                relativeTime: relativeTime,
+                onSelect: { project in
+                    selectedProjectPath = project.path
+                    recentStore.add(path: project.path)
+                    showProjectHub = false
+                },
+                onRemove: { recentStore.remove($0) }
+            )
+            .padding(22)
+        }
+        .background(HubShellBackground())
+        .clipShape(RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous)
+                .strokeBorder(HubMetrics.shellStroke(colorScheme: colorScheme), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.1), radius: 32, y: 14)
+    }
+
+    // MARK: - Welcome mark
+
+    /// App Store–style icons leave a large safe margin; zoom past it so the artwork fills the mark.
+    private static let welcomeMarkIconZoom: CGFloat = 1.52
+
+    private func latticeWelcomeMark(size: CGFloat) -> some View {
+        let corner = size * 0.24
+        let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
+        let side = size * Self.welcomeMarkIconZoom
+        return Group {
+            if let icon = NSApp.applicationIconImage {
                 ZStack {
-                    Circle()
-                        .fill(Color.accentColor.opacity(0.14))
-                        .frame(width: 52, height: 52)
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                        .frame(width: side, height: side)
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Welcome to Lattice")
-                        .font(.title2.weight(.semibold))
-                    Text("Pick a project folder to get started, then chat and run locally.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    chooseProjectFolder()
-                } label: {
-                    Label("Open project folder…", systemImage: "folder.badge.plus")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .modifier(HubGlassButtonModifier())
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
-
-                Button {
-                    showNewProject = true
-                } label: {
-                    Label("New project…", systemImage: "plus.square.dashed")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .modifier(HubGlassButtonModifier())
-                .controlSize(.large)
-
-                Text("Choose a folder or a recent project to start chatting. The assistant checks Xcode and simulators on your first message for each project.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(22)
-        .frame(maxWidth: 460, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.02))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.primary.opacity(0.12),
-                            Color.accentColor.opacity(0.25),
-                            Color.primary.opacity(0.08),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.16), radius: 28, y: 12)
-    }
-
-    private var trailingColumn: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent projects")
-                .font(.headline)
-            TextField("Search", text: $search)
-                .textFieldStyle(.roundedBorder)
-
-            if filteredRecents.isEmpty {
-                ContentUnavailableView(
-                    "No projects yet",
-                    systemImage: "square.stack.3d.up.slash",
-                    description: Text("Folders you open appear here.")
-                )
-                .frame(maxHeight: .infinity)
+                .frame(width: size, height: size)
+                .clipped()
+                .clipShape(shape)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(filteredRecents) { project in
-                            Button {
-                                selectedProjectPath = project.path
-                                recentStore.add(path: project.path)
-                                showProjectHub = false
-                            } label: {
-                                HStack(alignment: .center, spacing: 12) {
-                                    ProjectFolderIconView(path: project.path)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(project.displayName)
-                                            .font(.body.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                        Text(relativeTime.localizedString(for: project.lastOpened, relativeTo: .now))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(project.path)
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.primary.opacity(0.04))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("Remove from recents", role: .destructive) {
-                                    recentStore.remove(project)
-                                }
-                            }
-                        }
+                shape
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: size, height: size)
+                    .overlay {
+                        Image(systemName: "app.fill")
+                            .font(.system(size: size * 0.48, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
-                }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.primary.opacity(0.1),
-                            Color.accentColor.opacity(0.18),
-                            Color.primary.opacity(0.06),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.1), radius: 18, y: 8)
+        .frame(width: size, height: size)
+        .overlay {
+            shape.strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
     }
+
+    // MARK: - Folder picker
 
     private func chooseProjectFolder() {
         let panel = NSOpenPanel()
@@ -259,12 +196,370 @@ struct ProjectHubView: View {
     }
 }
 
-private struct HubGlassButtonModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.buttonStyle(.glass)
-        } else {
-            content.buttonStyle(.bordered)
+// MARK: - Metrics + shell (hub-specific)
+
+private enum HubMetrics {
+    static let shellRadius: CGFloat = 26
+
+    static func shellStroke(colorScheme: ColorScheme) -> LinearGradient {
+        let b: CGFloat = colorScheme == .dark ? 0.08 : 0.06
+        return LinearGradient(
+            colors: [
+                Color.white.opacity(colorScheme == .dark ? 0.14 : 0.55),
+                Color.accentColor.opacity(0.22),
+                Color.white.opacity(b),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static func hairlineFill(colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
+    }
+}
+
+private struct HubShellBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+
+            RoundedRectangle(cornerRadius: HubMetrics.shellRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.04 : 0.65),
+                            Color.white.opacity(colorScheme == .dark ? 0.02 : 0.2),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         }
+    }
+}
+
+private struct HubColumnDivider: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(colorScheme == .dark ? 0.06 : 0.5),
+                        Color.accentColor.opacity(0.15),
+                        Color.white.opacity(colorScheme == .dark ? 0.04 : 0.25),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .frame(width: 1)
+            .padding(.vertical, 20)
+    }
+}
+
+// MARK: - Hero
+
+private struct HubHeroColumn<Mark: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    var welcomeMark: Mark
+    var onOpenFolder: () -> Void
+    var onNewProject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 18) {
+                welcomeMark
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Welcome")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
+                    Text("Lattice")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                    Text("Open an Xcode project folder, or spin up a new app from a template. Chat and local Build & Run stay on your machine.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(3)
+                }
+            }
+
+            Spacer(minLength: 28)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Button(action: onNewProject) {
+                    Label("Create New App", systemImage: "plus.app")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(HubPrimaryButtonStyle())
+                .keyboardShortcut(.defaultAction)
+
+                Button(action: onOpenFolder) {
+                    Label("Import an App", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(HubSecondaryButtonStyle(colorScheme: colorScheme))
+            }
+
+            Spacer(minLength: 20)
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles.rectangle.stack")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 18, alignment: .center)
+                    .padding(.top, 2)
+                Text("On your first message in each project, Lattice checks Xcode, simulators, and related tools so fixes stay grounded in your setup.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(2)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 1)
+            )
+        }
+    }
+}
+
+// MARK: - Recents
+
+private struct HubRecentsColumn: View {
+    @Binding var search: String
+    var filteredRecents: [RecentProject]
+    var relativeTime: RelativeDateTimeFormatter
+    var onSelect: (RecentProject) -> Void
+    var onRemove: (RecentProject) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Recents")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                    .tracking(1.1)
+                Spacer()
+                Text("\(filteredRecents.count)")
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08)))
+            }
+            .padding(.bottom, 14)
+
+            HubSearchField(text: $search, colorScheme: colorScheme)
+                .padding(.bottom, 14)
+
+            if filteredRecents.isEmpty {
+                HubRecentsEmpty(searchNonEmpty: !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(filteredRecents) { project in
+                            HubRecentRow(
+                                project: project,
+                                relativeLabel: relativeTime.localizedString(for: project.lastOpened, relativeTo: .now),
+                                colorScheme: colorScheme,
+                                onSelect: { onSelect(project) },
+                                onRemove: { onRemove(project) }
+                            )
+                        }
+                    }
+                    .padding(.bottom, 6)
+                }
+            }
+        }
+    }
+}
+
+private struct HubSearchField: View {
+    @Binding var text: String
+    var colorScheme: ColorScheme
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            TextField("Filter by name or path", text: $text)
+                .textFieldStyle(.plain)
+                .font(.body)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.1), lineWidth: 1)
+        )
+    }
+}
+
+private struct HubRecentRow: View {
+    let project: RecentProject
+    let relativeLabel: String
+    var colorScheme: ColorScheme
+    var onSelect: () -> Void
+    var onRemove: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: 14) {
+                ProjectFolderIconView(path: project.path)
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(project.displayName)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(relativeLabel)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Text(project.path)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.quaternary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(rowFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(isHovering ? 0.16 : 0.06), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            Button("Remove from recents", role: .destructive, action: onRemove)
+        }
+    }
+
+    private var rowFill: Color {
+        if isHovering {
+            return Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.07)
+        }
+        return Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035)
+    }
+}
+
+private struct HubRecentsEmpty: View {
+    var searchNonEmpty: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.1 : 0.06))
+                    .frame(width: 56, height: 56)
+                Image(systemName: searchNonEmpty ? "line.3.horizontal.decrease.circle" : "square.stack.3d.up")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+            Text(searchNonEmpty ? "No matches" : "No recents yet")
+                .font(.headline)
+            Text(
+                searchNonEmpty
+                    ? "Try a shorter path fragment or the project display name."
+                    : "Folders you open are saved here for quick access."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 240)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+    }
+}
+
+// MARK: - Button styles
+
+private struct HubPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.accentColor.gradient)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+            )
+            .shadow(color: Color.accentColor.opacity(0.35), radius: configuration.isPressed ? 4 : 12, y: configuration.isPressed ? 2 : 6)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct HubSecondaryButtonStyle: ButtonStyle {
+    var colorScheme: ColorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.14), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

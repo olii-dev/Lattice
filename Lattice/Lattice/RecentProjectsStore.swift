@@ -65,7 +65,7 @@ final class RecentProjectsStore: ObservableObject {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return projects }
         return projects.filter {
-            $0.displayName.lowercased().contains(q)
+            $0.displayName.lowercased().contains(q) || $0.path.lowercased().contains(q)
         }
     }
 }

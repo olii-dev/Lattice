@@ -71,7 +71,15 @@ struct AccountSettingsView: View {
     }
 
     var body: some View {
-        Form {
+        ZStack {
+            LatticeWindowBackdrop()
+                .ignoresSafeArea()
+
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            Form {
             Section {
                 Picker("Appearance", selection: $latticeAppearancePreference) {
                     Text("System").tag("system")
@@ -199,6 +207,7 @@ struct AccountSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .frame(minWidth: 480, minHeight: 400, alignment: .topLeading)
         .padding(.vertical, 8)
         .preferredColorScheme(settingsPreferredAppearance)
@@ -240,6 +249,7 @@ struct AccountSettingsView: View {
                 }()
                 if !valid { selectedSimulatorID = "" }
             }
+        }
         }
     }
 

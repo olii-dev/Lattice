@@ -1,17 +1,73 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Transcript layout (reading column: assistant leading, user trailing)
 
 /// Column width for transcript; centered in the window; rows align content inside it.
-private let latticeTranscriptColumnMaxWidth: CGFloat = 720
-private let latticeUserBubbleMaxWidth: CGFloat = 380
+private let latticeTranscriptColumnMaxWidth: CGFloat = 660
+private let latticeUserBubbleMaxWidth: CGFloat = 348
 /// Assistant markdown reads best a bit narrower than the full column.
-private let latticeAssistantProseMaxWidth: CGFloat = 560
-/// Consecutive tool runs this long collapse into one disclosure by default.
-private let latticeToolRunBatchThreshold: Int = 3
+private let latticeAssistantProseMaxWidth: CGFloat = 520
 
+// MARK: - Shared UI tokens
+
+private enum LatticeSurfaceTokens {
+    static let cornerSmall: CGFloat = 10
+    static let cornerMedium: CGFloat = 14
+    static let cornerLarge: CGFloat = 18
+    /// Softer “voice assistant” transcript cards (Dribbble-style glass bubbles).
+    static let cornerTranscript: CGFloat = 22
+    static let shellStrokeOpacity: CGFloat = 0.12
+    static let shellShadowOpacity: CGFloat = 0.10
+    static let elevatedFillOpacity: CGFloat = 0.06
+    static let focusFillOpacity: CGFloat = 0.12
+}
+
+private struct LatticeElevatedCardModifier: ViewModifier {
+    let radius: CGFloat
+    let strokeOpacity: CGFloat
+    let shadowOpacity: CGFloat
+
+    init(
+        radius: CGFloat = LatticeSurfaceTokens.cornerMedium,
+        strokeOpacity: CGFloat = LatticeSurfaceTokens.shellStrokeOpacity,
+        shadowOpacity: CGFloat = LatticeSurfaceTokens.shellShadowOpacity
+    ) {
+        self.radius = radius
+        self.strokeOpacity = strokeOpacity
+        self.shadowOpacity = shadowOpacity
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(strokeOpacity), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(shadowOpacity), radius: 8, y: 2)
+    }
+}
+
+private extension View {
+    func latticeElevatedCard(
+        radius: CGFloat = LatticeSurfaceTokens.cornerMedium,
+        strokeOpacity: CGFloat = LatticeSurfaceTokens.shellStrokeOpacity,
+        shadowOpacity: CGFloat = LatticeSurfaceTokens.shellShadowOpacity
+    ) -> some View {
+        modifier(
+            LatticeElevatedCardModifier(
+                radius: radius,
+                strokeOpacity: strokeOpacity,
+                shadowOpacity: shadowOpacity
+            )
+        )
+    }
+}
+
+/// Consecutive tool runs this long collapse into one disclosure by default.
 extension Notification.Name {
     static let latticeOpenWelcomeHub = Notification.Name("latticeOpenWelcomeHub")
     static let latticeRunOnSimulator = Notification.Name("latticeRunOnSimulator")
@@ -295,37 +351,117 @@ final class SimulatorStore: ObservableObject {
     }
 }
 
+/// Shown under a failed assistant bubble; retry truncates transcript + API history and reapplies `write_file` undos.
+struct PendingRetryState: Equatable {
+    let errorItemId: UUID
+    let keepItemsPrefixCount: Int
+    let keepHistoryPrefixCount: Int
+    let fileUndos: [LatticeWriteFileUndo]
+    /// `git rev-parse HEAD` at first tool execution in this burst (nil if not a git repo).
+    let gitHeadOID: String?
+    let gitProjectRoot: String?
+}
+
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var items: [ChatItem] = []
     @Published var isRunning = false
-    @Published var changeCount = 0  // incremented on every streaming update → scroll trigger
+    /// Bumped only when the transcript should pin to the bottom (streaming, tools, send). Not used for unrelated layout.
+    @Published private(set) var transcriptScrollToBottomToken: UInt = 0
+    /// Parsed from the latest finalized assistant reply (Bundle / Team / version lines).
+    @Published private(set) var pendingInspectorHints: AssistantInspectorHints?
 
     private let service = LLMService()
     private let executor = ToolExecutor()
     private weak var consoleStore: LatticeConsoleStore?
     private var conversationHistory: [[String: Any]] = []
     private var agentTask: Task<Void, Never>?
-    private var messageQueue: [QueuedMessage] = []
+    /// Transcript rows to keep when retrying the current user turn (prefix of `items` after the user bubble).
+    private var burstKeepItemsPrefixCount: Int = 0
+    /// API messages to keep when retrying (includes the user message for this turn).
+    private var burstKeepHistoryPrefixCount: Int = 0
+    private var burstFileUndos: [LatticeWriteFileUndo] = []
+    /// First `HEAD` OID captured before any tool runs in this user burst (git rollback).
+    private var burstGitStartOID: String?
     /// Matches `selectedProjectPath` from the main window (trimmed); drives per-project persistence.
     private var scopedProjectPath: String = ""
+    private var compactionRunForThisAgentBurst = false
+    /// Auto-compaction when estimated API history + system/tools approaches context budget (less aggressive than before).
+    private let compactionFillThreshold = 0.92
+    private let compactionMinHistoryMessages = 10
+    /// Keep this many recent API messages verbatim; summarize only older messages.
+    private let compactionVerbatimTailMessages = 8
+    /// Coalesces scroll/layout pulses while SSE text arrives (was one per token).
+    private var lastTranscriptScrollPulse: Date = .distantPast
+    private let transcriptScrollMinInterval: TimeInterval = 0.09
+
+    @Published private(set) var pendingRetry: PendingRetryState?
+    /// Completed-turn restore points (newest at end); headers only for UI.
+    @Published private(set) var chatRestorePointHeaders: [LatticeChatRestorePointHeader] = []
 
     init(consoleStore: LatticeConsoleStore? = nil) {
         self.consoleStore = consoleStore
     }
 
+    func reloadChatRestorePointHeaders() {
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else {
+            chatRestorePointHeaders = []
+            return
+        }
+        chatRestorePointHeaders = LatticeChatRestoreHistory.loadAll(projectPath: root).map {
+            LatticeChatRestorePointHeader(id: $0.id, createdAt: $0.createdAt, userLine: $0.userLine, userText: $0.userText)
+        }
+    }
+
+    /// Restores git to the selected checkpoint. Chat can restore to a different checkpoint (e.g. previous)
+    /// so the selected turn can be removed from visible transcript while still restoring code correctly.
+    func restoreHistory(selectedPointId: UUID, chatPointId: UUID?) {
+        guard !isRunning else { return }
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else { return }
+        let points = LatticeChatRestoreHistory.loadAll(projectPath: root)
+        guard let selectedPoint = points.first(where: { $0.id == selectedPointId }) else { return }
+
+        if let oid = selectedPoint.gitTreeOID, !oid.isEmpty {
+            LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+            let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+            LatticeGitWorkspaceCheckpoint.persistRetryBaseline(projectFingerprint: fp, oid: oid)
+        }
+
+        if let chatPointId,
+           let chatPoint = points.first(where: { $0.id == chatPointId }),
+           let decoded = LatticeChatRestoreHistory.decode(chatPoint) {
+            items = decoded.items
+            conversationHistory = decoded.history
+        } else if let decodedSelected = LatticeChatRestoreHistory.decode(selectedPoint) {
+            // Never blank the whole transcript on restore fallback; prefer selected checkpoint snapshot.
+            items = decodedSelected.items
+            conversationHistory = decodedSelected.history
+        }
+        pendingRetry = nil
+        clearPendingInspectorHints()
+        burstFileUndos.removeAll()
+        burstKeepItemsPrefixCount = items.count
+        burstKeepHistoryPrefixCount = conversationHistory.count
+        refreshBurstGitStartFromBaseline()
+        LatticeChatRestoreHistory.removeRestorePointAndNewer(projectPath: root, pointId: selectedPointId)
+        reloadChatRestorePointHeaders()
+        persistSession()
+    }
+
     /// Call when the selected project folder changes so each project keeps its own transcript + agent history.
     func syncProjectPath(_ rawPath: String) {
-        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = ChatSessionPersistence.canonicalProjectPath(rawPath)
         guard path != scopedProjectPath else { return }
 
         if isRunning {
             agentTask?.cancel()
             agentTask = nil
-            messageQueue.removeAll()
             isRunning = false
         }
 
+        pendingRetry = nil
         if !items.isEmpty || !conversationHistory.isEmpty {
             persistSession()
         }
@@ -333,7 +469,12 @@ final class ChatViewModel: ObservableObject {
         scopedProjectPath = path
         items = ChatSessionPersistence.loadItems(projectPath: path)
         conversationHistory = ChatSessionPersistence.loadHistory(projectPath: path)
-        changeCount += 1
+        pendingRetry = nil
+        burstFileUndos.removeAll()
+        burstGitStartOID = nil
+        burstKeepItemsPrefixCount = items.count
+        burstKeepHistoryPrefixCount = conversationHistory.count
+        reloadChatRestorePointHeaders()
     }
 
     func persistSession() {
@@ -341,22 +482,213 @@ final class ChatViewModel: ObservableObject {
         ChatSessionPersistence.saveHistory(conversationHistory, projectPath: scopedProjectPath)
     }
 
+    func clearPendingInspectorHints() {
+        pendingInspectorHints = nil
+    }
+
+    private func requestTranscriptScrollToBottom(immediate: Bool) {
+        if !immediate {
+            let now = Date()
+            guard now.timeIntervalSince(lastTranscriptScrollPulse) >= transcriptScrollMinInterval else { return }
+            lastTranscriptScrollPulse = now
+        }
+        transcriptScrollToBottomToken &+= 1
+    }
+
+    private func noteTranscriptScrollIntent() {
+        requestTranscriptScrollToBottom(immediate: false)
+    }
+
+    private func appendAssistantFailure(_ message: String) {
+        let row = ChatItem(kind: .assistant(message, isStreaming: false))
+        items.append(row)
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingRetry = PendingRetryState(
+            errorItemId: row.id,
+            keepItemsPrefixCount: max(0, burstKeepItemsPrefixCount),
+            keepHistoryPrefixCount: max(0, burstKeepHistoryPrefixCount),
+            fileUndos: burstFileUndos,
+            gitHeadOID: burstGitStartOID,
+            gitProjectRoot: root.isEmpty ? nil : root
+        )
+        requestTranscriptScrollToBottom(immediate: true)
+    }
+
+    private func refreshBurstGitStartFromBaseline() {
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else {
+            burstGitStartOID = nil
+            return
+        }
+        let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+        burstGitStartOID = LatticeGitWorkspaceCheckpoint.loadRetryBaseline(projectFingerprint: fp)
+            ?? LatticeGitWorkspaceCheckpoint.captureWorkingTreeSnapshot(worktree: root)
+            ?? LatticeGitWorkspaceCheckpoint.captureHead(worktree: root)
+    }
+
+    private func persistGitBaselineAfterQuietTurnCompletion() -> String? {
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else { return nil }
+        let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+        guard let snap = LatticeGitWorkspaceCheckpoint.captureWorkingTreeSnapshot(worktree: root) else { return nil }
+        LatticeGitWorkspaceCheckpoint.persistRetryBaseline(projectFingerprint: fp, oid: snap)
+        return snap
+    }
+
+    /// Re-runs the model from the last user message after git + file rollback for that attempt.
+    func performRetry(apiKey: String, context: ChatContext) {
+        guard let pack = pendingRetry, !isRunning, !apiKey.isEmpty else { return }
+        if let root = pack.gitProjectRoot, let oid = pack.gitHeadOID, !root.isEmpty, !oid.isEmpty {
+            LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+        }
+        for u in pack.fileUndos.reversed() {
+            u.apply()
+        }
+        if items.count > pack.keepItemsPrefixCount {
+            items = Array(items.prefix(pack.keepItemsPrefixCount))
+        }
+        if conversationHistory.count > pack.keepHistoryPrefixCount {
+            conversationHistory = Array(conversationHistory.prefix(pack.keepHistoryPrefixCount))
+        }
+        pendingRetry = nil
+        burstKeepItemsPrefixCount = pack.keepItemsPrefixCount
+        burstKeepHistoryPrefixCount = pack.keepHistoryPrefixCount
+        burstFileUndos.removeAll()
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !root.isEmpty {
+            burstGitStartOID = LatticeGitWorkspaceCheckpoint.captureWorkingTreeSnapshot(worktree: root)
+                ?? LatticeGitWorkspaceCheckpoint.captureHead(worktree: root)
+        } else {
+            burstGitStartOID = nil
+        }
+        persistSession()
+        isRunning = true
+        requestTranscriptScrollToBottom(immediate: true)
+        compactionRunForThisAgentBurst = false
+        agentTask = Task {
+            defer { isRunning = false }
+            await agenticLoop(apiKey: apiKey, context: context)
+        }
+    }
+
+    private func ingestAssistantHintsFromLastAssistantText() {
+        for item in items.reversed() {
+            if case .assistant(let text, let streaming) = item.kind, !streaming {
+                if let hints = AssistantProjectFooterParser.parse(fromAssistantMarkdown: text) {
+                    pendingInspectorHints = hints
+                }
+                return
+            }
+        }
+    }
+
+    private func maybeAutoCompactHistory(apiKey: String, context: ChatContext) async {
+        guard !compactionRunForThisAgentBurst else { return }
+        let budget = LatticeContextLimits.inputTokenBudget(modelId: context.model, providerRaw: context.provider)
+        let hist = LatticeContextEstimator.approximateChatHistoryTokens(for: conversationHistory)
+        let inst = LLMService.approximateLatticeInstructionPayloadTokens(context: context)
+        let billed = hist + inst.system + inst.tools
+        let fill = Double(billed) / Double(max(1, budget))
+        guard fill >= compactionFillThreshold else { return }
+        guard conversationHistory.count > compactionMinHistoryMessages else { return }
+        guard conversationHistory.count > compactionVerbatimTailMessages + 4 else { return }
+
+        let tail = Array(conversationHistory.suffix(compactionVerbatimTailMessages))
+        let head = Array(conversationHistory.dropLast(compactionVerbatimTailMessages))
+        guard !head.isEmpty else { return }
+
+        compactionRunForThisAgentBurst = true
+
+        let digest = Self.jsonHistoryDigest(head, maxUTF16: 72_000)
+        let prompt = """
+        You are summarizing ONLY the EARLY portion of a Lattice coding-agent API message log. The RECENT messages are preserved separately; your output replaces only this older prefix.
+
+        Output plain prose only. No markdown. Under 3500 words.
+
+        Use exactly these section headings in order (each on its own line), then content under each:
+        SECTION USER GOALS:
+        SECTION FILES AND PATHS:
+        SECTION COMMANDS AND BUILD OUTPUT:
+        SECTION ERRORS VERBATIM:
+        SECTION OPEN ISSUES AND NEXT STEPS:
+
+        Under SECTION ERRORS VERBATIM, quote Xcode, simulator, or tool errors exactly when available.
+
+        Older JSON chat log (prefix only):
+        \(digest)
+        """
+
+        do {
+            let summary = try await service.complete(
+                prompt: prompt,
+                apiKey: apiKey,
+                model: context.model,
+                provider: LLMProvider(rawValue: context.provider) ?? .anthropic,
+                zaiUseCodingEndpoint: context.zaiUseCodingEndpoint,
+                maxOutputTokens: 4096
+            )
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let wrapped = """
+            [Lattice automatic session compaction at \(stamp)]
+            The following summarizes EARLIER API turns only. Recent messages after this block are kept verbatim for the model.
+
+            \(summary)
+            """
+            conversationHistory = [["role": "user", "content": wrapped]] + tail
+            items.append(ChatItem(kind: .assistant(
+                "Lattice summarized older context so recent messages stay verbatim in the model; your transcript above is unchanged except for this note.",
+                isStreaming: false
+            )))
+            pendingRetry = nil
+            requestTranscriptScrollToBottom(immediate: true)
+            persistSession()
+        } catch {
+            Self.removeOldestHistoryMessages(&conversationHistory, keepLast: max(6, conversationHistory.count / 2))
+            persistSession()
+        }
+    }
+
+    private static func jsonHistoryDigest(_ history: [[String: Any]], maxUTF16: Int) -> String {
+        guard JSONSerialization.isValidJSONObject(history),
+              let data = try? JSONSerialization.data(withJSONObject: history, options: [.prettyPrinted]),
+              let s = String(data: data, encoding: .utf8)
+        else { return "" }
+        if s.count > maxUTF16 {
+            return "...(truncated head)\n\n" + String(s.suffix(maxUTF16))
+        }
+        return s
+    }
+
+    private static func removeOldestHistoryMessages(_ history: inout [[String: Any]], keepLast: Int) {
+        let k = max(2, keepLast)
+        while history.count > k {
+            history.removeFirst()
+        }
+    }
+
     func send(_ text: String, apiKey: String, context: ChatContext, showUserBubble: Bool = true) {
         guard !text.isEmpty, !apiKey.isEmpty else { return }
+        if isRunning, showUserBubble { return }
 
         if showUserBubble {
+            pendingRetry = nil
             items.append(ChatItem(kind: .user(text)))
         }
 
         let outbound = outboundUserContent(forAPI: text)
 
-        if isRunning {
-            messageQueue.append(QueuedMessage(text: outbound, context: context))
-            return
-        }
+        guard !isRunning else { return }
 
         isRunning = true
+        compactionRunForThisAgentBurst = false
         conversationHistory.append(["role": "user", "content": contextualizedMessage(outbound, context: context)])
+        if showUserBubble {
+            burstKeepItemsPrefixCount = items.count
+            burstKeepHistoryPrefixCount = conversationHistory.count
+            burstFileUndos.removeAll()
+            refreshBurstGitStartFromBaseline()
+            requestTranscriptScrollToBottom(immediate: true)
+        }
 
         agentTask = Task {
             defer { isRunning = false }
@@ -383,21 +715,42 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
     func stop() {
         agentTask?.cancel()
         agentTask = nil
-        messageQueue.removeAll()
         isRunning = false
+        pendingRetry = nil
         persistSession()
     }
 
     func clear() {
         items.removeAll()
         conversationHistory.removeAll()
+        pendingRetry = nil
+        burstFileUndos.removeAll()
+        burstGitStartOID = nil
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !root.isEmpty {
+            let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+            LatticeGitWorkspaceCheckpoint.clearRetryBaseline(projectFingerprint: fp)
+        }
         ChatSessionPersistence.clear(projectPath: scopedProjectPath)
+        LatticeChatRestoreHistory.clear(projectPath: scopedProjectPath)
+        chatRestorePointHeaders = []
+    }
+
+    private static func lastUserTextForHistoryRestore(from items: [ChatItem]) -> String {
+        for item in items.reversed() {
+            if case .user(let text) = item.kind {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return ""
     }
 
     // MARK: - Agentic loop
 
     private func agenticLoop(apiKey: String, context: ChatContext) async {
         while true {
+            await maybeAutoCompactHistory(apiKey: apiKey, context: context)
+
             var streamingTextIdx: Int?    // index into items[] of the current assistant text bubble
             var streamingReasoningIdx: Int?
             var toolItemIdxBySSE: [Int: Int] = [:]   // SSE block index → items[] index
@@ -420,7 +773,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                     toolItemIdxBySSE = [:]
                     finishedBlocks = [:]
                     stopReason = "end_turn"
-                    changeCount += 1
+                    requestTranscriptScrollToBottom(immediate: true)
                     try? await Task.sleep(nanoseconds: retryDelay)
                     retryDelay = min(retryDelay * 2, 8_000_000_000)
                     guard !Task.isCancelled else { return }
@@ -435,7 +788,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                     if let idx = items.firstIndex(where: { $0.id == workingId }) {
                         items.remove(at: idx)
                         didRemoveWorking = true
-                        changeCount += 1
+                        requestTranscriptScrollToBottom(immediate: true)
                     }
                 }
                 func pruneEmptyReasoning(at index: Int?) {
@@ -470,7 +823,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                                 items.append(ChatItem(kind: .reasoning(delta, isStreaming: true)))
                                 streamingReasoningIdx = items.count - 1
                             }
-                            changeCount += 1
+                            noteTranscriptScrollIntent()
 
                         case .textDelta(let delta):
                             removeWorkingPlaceholder()
@@ -485,7 +838,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                                 streamingTextIdx = items.count
                                 items.append(item)
                             }
-                            changeCount += 1
+                            noteTranscriptScrollIntent()
 
                         case .toolCallAnnounced(let sseIdx, _, let name):
                             removeWorkingPlaceholder()
@@ -503,7 +856,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                             ))
                             toolItemIdxBySSE[sseIdx] = items.count
                             items.append(item)
-                            changeCount += 1
+                            requestTranscriptScrollToBottom(immediate: true)
 
                         case .done(let reason, let blocks):
                             stopReason = reason
@@ -526,7 +879,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                                     )
                                 }
                             }
-                            changeCount += 1
+                            requestTranscriptScrollToBottom(immediate: true)
                         }
                     }
                     removeWorkingPlaceholder()
@@ -543,37 +896,25 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                         }
                         networkAttempt += 1
                         if networkAttempt > 5 {
-                            items.append(ChatItem(kind: .assistant(
-                                "Error: Request timed out. Please try again.",
-                                isStreaming: false
-                            )))
-                            changeCount += 1
+                            appendAssistantFailure("Error: Request timed out. Please try again.")
                             return
                         }
                         continue
                     }
                     if streamedAnyChunks {
-                        items.append(ChatItem(kind: .assistant(
-                            "Error: Connection interrupted while streaming. Please retry.\n\n\(APIErrorFormatting.userFacingMessage(from: err))",
-                            isStreaming: false
-                        )))
-                        changeCount += 1
+                        appendAssistantFailure(
+                            "Error: Connection interrupted while streaming. Please retry.\n\n\(APIErrorFormatting.userFacingMessage(from: err))"
+                        )
                         return
                     }
                     networkAttempt += 1
                     if networkAttempt > 3 {
-                        items.append(ChatItem(kind: .assistant(
-                            "Error: \(APIErrorFormatting.userFacingMessage(from: err))", isStreaming: false
-                        )))
-                        changeCount += 1
+                        appendAssistantFailure("Error: \(APIErrorFormatting.userFacingMessage(from: err))")
                         return
                     }
                 } catch {
                     removeWorkingPlaceholder()
-                    items.append(ChatItem(kind: .assistant(
-                        "Error: \(APIErrorFormatting.userFacingMessage(from: error))", isStreaming: false
-                    )))
-                    changeCount += 1
+                    appendAssistantFailure("Error: \(APIErrorFormatting.userFacingMessage(from: error))")
                     return
                 }
             }
@@ -588,43 +929,12 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
 
             if !assistantContent.isEmpty {
                 conversationHistory.append(["role": "assistant", "content": assistantContent])
+                ingestAssistantHintsFromLastAssistantText()
+                pendingRetry = nil
             }
 
             if stopReason != "tool_use" {
-                guard !messageQueue.isEmpty, !Task.isCancelled else { break }
-                let next = messageQueue.removeFirst()
-                conversationHistory.append([
-                    "role": "user",
-                    "content": contextualizedMessage(next.text, context: next.context)
-                ])
-                continue
-            }
-
-            if let next = takeLatestQueuedMessage() {
-                let supersededMessage = "Skipped because a newer queued message superseded this tool call."
-                var skippedToolResults: [[String: Any]] = []
-
-                for (_, block) in finishedBlocks.sorted(by: { $0.key < $1.key }) {
-                    guard block.type == "tool_use", let toolId = block.toolId else { continue }
-                    skippedToolResults.append(toolResultMessage(
-                        toolUseId: toolId,
-                        content: supersededMessage,
-                        isError: false
-                    ))
-                }
-
-                for itemsIdx in toolItemIdxBySSE.values {
-                    items[itemsIdx].setToolResult(supersededMessage, isError: false)
-                }
-                changeCount += 1
-
-                var userContent = skippedToolResults
-                userContent.append([
-                    "type": "text",
-                    "text": contextualizedMessage(next.text, context: next.context)
-                ])
-                conversationHistory.append(["role": "user", "content": userContent])
-                continue
+                break
             }
 
             // Execute each tool call and collect results
@@ -637,7 +947,17 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                       let input = block.parsedInput
                 else { continue }
 
+                let writeUndo: LatticeWriteFileUndo?
+                if toolName == "write_file", let path = input["path"] as? String {
+                    writeUndo = LatticeWriteFileUndo.capture(path: path)
+                } else {
+                    writeUndo = nil
+                }
+
                 let (output, isError) = await executor.execute(name: toolName, input: input)
+                if toolName == "write_file", let u = writeUndo, !isError {
+                    burstFileUndos.append(u)
+                }
                 consoleStore?.append(
                     output,
                     category: "\(toolName)\(isError ? " (error)" : "")",
@@ -652,7 +972,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
 
                 if let itemsIdx = toolItemIdxBySSE[sseIdx] {
                     items[itemsIdx].setToolResult(output, isError: isError)
-                    changeCount += 1
+                    requestTranscriptScrollToBottom(immediate: true)
                 }
 
                 toolResults.append(toolResultMessage(
@@ -663,6 +983,19 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
             if !toolResults.isEmpty {
                 conversationHistory.append(["role": "user", "content": toolResults])
             }
+        }
+        let snap = persistGitBaselineAfterQuietTurnCompletion()
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !root.isEmpty {
+            LatticeChatRestoreHistory.appendCompletedTurn(
+                projectPath: root,
+                userLine: Self.lastUserTextForHistoryRestore(from: items),
+                userText: Self.lastUserTextForHistoryRestore(from: items),
+                gitTreeOID: snap,
+                items: items,
+                conversationHistory: conversationHistory
+            )
+            reloadChatRestorePointHeaders()
         }
     }
 
@@ -689,17 +1022,6 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         default:               return json
         }
     }
-
-    private func takeLatestQueuedMessage() -> QueuedMessage? {
-        guard let latest = messageQueue.last else { return nil }
-        messageQueue.removeAll()
-        return latest
-    }
-
-    private struct QueuedMessage {
-        let text: String
-        let context: ChatContext
-    }
 }
 
 // MARK: - Chat transcript rows (grouped)
@@ -718,6 +1040,127 @@ private enum ChatDisplayRow: Identifiable {
     }
 }
 
+// MARK: - History restore UI
+// TODO(lattice-history-ui): Re-enable and polish HistoryRestoreSheet in toolbar once restore behavior is fully validated end-to-end.
+private struct HistoryRestoreSheet: View {
+    /// Chronological checkpoints (oldest → newest).
+    let checkpoints: [LatticeChatRestorePointHeader]
+    let isBusy: Bool
+    /// When `targetId` is nil, callers should reset to an empty chat for this project.
+    /// `restoredPrompt` is the checkpoint message text the user selected.
+    let onRestore: (_ selectedId: UUID, _ chatTargetId: UUID?, _ restoredPrompt: String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedID: UUID?
+    @State private var showConfirm = false
+
+    private var relative: RelativeDateTimeFormatter {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }
+
+    private var dateFmt: DateFormatter {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if checkpoints.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 34, weight: .semibold))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.tertiary)
+                        Text("No checkpoints yet")
+                            .font(.headline)
+                        Text("Checkpoints appear after each finished reply. Send a message, wait for the agent to finish, then open History again.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 420)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 40)
+                } else {
+                    List(selection: $selectedID) {
+                        Section {
+                            ForEach(checkpoints.reversed()) { h in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: "bookmark.fill")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 2)
+
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(h.userLine)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(2)
+                                        Text("\(relative.localizedString(for: h.createdAt, relativeTo: Date())) • \(dateFmt.string(from: h.createdAt))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                }
+                                .contentShape(Rectangle())
+                                .tag(h.id)
+                                .onTapGesture { selectedID = h.id }
+                            }
+                        } footer: {
+                            Text("Restoring resets the repo (when available) and model context to that moment. The selected checkpoint and any newer checkpoints are removed.")
+                        }
+                    }
+                    .listStyle(.sidebar)
+                }
+            }
+            .navigationTitle("History")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showConfirm = true
+                    } label: {
+                        Label("Restore", systemImage: "arrow.uturn.backward")
+                    }
+                    .disabled(isBusy || selectedID == nil)
+                }
+            }
+            .confirmationDialog(
+                "Restore to this checkpoint?",
+                isPresented: $showConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Restore", role: .destructive) {
+                    guard let selectedID else { return }
+                    let restoredPrompt = checkpoints.first(where: { $0.id == selectedID })?.userText
+                        ?? checkpoints.first(where: { $0.id == selectedID })?.userLine
+                        ?? ""
+                    if let idx = checkpoints.firstIndex(where: { $0.id == selectedID }) {
+                        let chatTarget = (idx == 0) ? selectedID : checkpoints[idx - 1].id
+                        onRestore(selectedID, chatTarget, restoredPrompt)
+                    }
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let selectedID,
+                   let selected = checkpoints.first(where: { $0.id == selectedID }) {
+                    Text("After: “\(selected.userLine)”")
+                }
+            }
+        }
+        .frame(minWidth: 720, minHeight: 520)
+    }
+}
+
 // MARK: - Root View
 
 struct ContentView: View {
@@ -727,6 +1170,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     @StateObject private var viewModel: ChatViewModel
     @StateObject private var recentStore = RecentProjectsStore()
@@ -767,6 +1211,7 @@ struct ContentView: View {
 
     @State private var showConsoleSheet = false
     @State private var consoleSearch = ""
+    @State private var sidebarLayoutScrollToken: UInt = 0
 
     init(simulatorStore: SimulatorStore, generationState: LatticeGenerationState, consoleStore: LatticeConsoleStore) {
         self.simulatorStore = simulatorStore
@@ -867,9 +1312,70 @@ struct ContentView: View {
         return lines.filter { $0.localizedCaseInsensitiveContains(query) }.joined(separator: "\n")
     }
 
-    var body: some View {
+    @ViewBuilder
+    private var consoleSheetRoot: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "terminal")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let name = path.isEmpty ? "No project" : (path as NSString).lastPathComponent
+                            Text(name)
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(consoleStore.lines.count) lines")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    TextField("Filter log…", text: $consoleSearch)
+                        .textFieldStyle(.roundedBorder)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+                .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.10, shadowOpacity: 0.06)
+                .padding(.horizontal, 12)
+
+                ScrollView {
+                    Text(filteredConsoleText.isEmpty ? "No console output yet for this project." : filteredConsoleText)
+                        .font(.system(.caption, design: .monospaced))
+                        .multilineTextAlignment(.leading)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.09, shadowOpacity: 0.05)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+            }
+            .navigationTitle("Console")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { showConsoleSheet = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Copy") {
+                        copyTextAndToast(filteredConsoleText, toast: "Log copied")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Clear", role: .destructive) {
+                        consoleStore.clear(projectPath: selectedProjectPath)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 440)
+    }
+
+    private var mainChatStack: some View {
         ZStack {
-            buildRunBackdrop
+            LatticeWindowBackdrop()
                 .ignoresSafeArea()
 
             Rectangle()
@@ -887,199 +1393,213 @@ struct ContentView: View {
                 Divider()
                 inputBar
             }
+            // Inspector column resizes the chat strip every frame; implicit animations + nested Materials
+            // re-sample blur and read as a flash. Pin layout without animating chrome for this value.
+            .animation(nil, value: showProjectPanel)
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: directRunBanner != nil)
-        .preferredColorScheme(preferredAppearance)
-        .tint(accentTint)
-        .sheet(isPresented: $showConsoleSheet) {
-            NavigationStack {
-                VStack(spacing: 0) {
-                    TextField("Search log", text: $consoleSearch)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(.horizontal)
-                        .padding(.top, 12)
-                    ScrollView {
-                        Text(filteredConsoleText)
-                            .font(.system(.caption, design: .monospaced))
-                            .multilineTextAlignment(.leading)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                    }
-                }
-                .navigationTitle("Console")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { showConsoleSheet = false }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Copy") {
-                            copyTextAndToast(filteredConsoleText, toast: "Log copied")
-                        }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Clear", role: .destructive) {
-                            consoleStore.clear(projectPath: selectedProjectPath)
-                        }
-                    }
-                }
-            }
-            .frame(minWidth: 560, minHeight: 440)
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .principal) {
-                if !selectedProjectPath.isEmpty, !showProjectHub {
-                    Button(action: runOnSimulatorDirect) {
+    }
+
+    @ToolbarContentBuilder
+    private var latticeMainToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .principal) {
+            if !selectedProjectPath.isEmpty, !showProjectHub {
+                Button(action: runOnSimulatorDirect) {
+                    Group {
                         if isDirectRunInProgress {
                             ProgressView()
                                 .controlSize(.small)
-                                .frame(width: 28, height: 28)
                         } else {
-                            Label("Build & Run", systemImage: "play.fill")
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.primary)
+                                .offset(x: 0.5)
                         }
                     }
-                    .help(buildRunHelp)
-                    .disabled(!canLocalBuildAndRun)
+                    .frame(width: 30, height: 30, alignment: .center)
+                }
+                .help(buildRunHelp)
+                .disabled(!canLocalBuildAndRun)
+                .controlSize(.small)
 
-                    Menu {
-                        if supportedRunDestinations.contains(.macOS) {
-                            Section("My Mac") {
-                                Button {
-                                    latticeLocalRunDestinationRaw = LatticeLocalRunDestination.macOS.rawValue
-                                    selectedSimulatorID = ""
-                                } label: {
-                                    Label("My Mac", systemImage: localRunDestination == .macOS ? "checkmark" : "laptopcomputer")
-                                }
+                Menu {
+                    if supportedRunDestinations.contains(.macOS) {
+                        Section("My Mac") {
+                            Button {
+                                latticeLocalRunDestinationRaw = LatticeLocalRunDestination.macOS.rawValue
+                                selectedSimulatorID = ""
+                            } label: {
+                                Label("My Mac", systemImage: localRunDestination == .macOS ? "checkmark" : "laptopcomputer")
                             }
                         }
+                    }
 
-                        if supportedRunDestinations.contains(.iOSSimulator) || supportedRunDestinations.contains(.watchOSSimulator) {
-                            Section("Simulators") {
-                                if supportedRunDestinations.contains(.iOSSimulator) {
-                                    ForEach(simulatorStore.simulators.filter { $0.matches(filter: .iOS) }) { sim in
-                                        Button {
-                                            latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSSimulator.rawValue
-                                            selectedSimulatorID = sim.id
-                                        } label: {
-                                            Label(sim.name, systemImage: (localRunDestination == .iOSSimulator && selectedSimulatorID == sim.id) ? "checkmark" : "iphone")
-                                        }
-                                    }
-                                }
-                                if supportedRunDestinations.contains(.watchOSSimulator) {
-                                    ForEach(simulatorStore.simulators.filter { $0.matches(filter: .watchOS) }) { sim in
-                                        Button {
-                                            latticeLocalRunDestinationRaw = LatticeLocalRunDestination.watchOSSimulator.rawValue
-                                            selectedSimulatorID = sim.id
-                                        } label: {
-                                            Label(sim.name, systemImage: (localRunDestination == .watchOSSimulator && selectedSimulatorID == sim.id) ? "checkmark" : "applewatch")
-                                        }
+                    if supportedRunDestinations.contains(.iOSSimulator) || supportedRunDestinations.contains(.watchOSSimulator) {
+                        Section("Simulators") {
+                            if supportedRunDestinations.contains(.iOSSimulator) {
+                                ForEach(simulatorStore.simulators.filter { $0.matches(filter: .iOS) }) { sim in
+                                    Button {
+                                        latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSSimulator.rawValue
+                                        selectedSimulatorID = sim.id
+                                    } label: {
+                                        Label(sim.name, systemImage: (localRunDestination == .iOSSimulator && selectedSimulatorID == sim.id) ? "checkmark" : "iphone")
                                     }
                                 }
                             }
-                        }
-
-                        if supportedRunDestinations.contains(.iOSDevice) {
-                            Section("Connected devices") {
-                                if devicesForToolbar.isEmpty {
-                                    Text("No connected devices")
-                                } else {
-                                    ForEach(devicesForToolbar) { device in
-                                        Button {
-                                            latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSDevice.rawValue
-                                            selectedSimulatorID = device.id
-                                        } label: {
-                                            Label(device.label, systemImage: (localRunDestination == .iOSDevice && selectedSimulatorID == device.id) ? "checkmark" : device.menuSymbolName)
-                                        }
+                            if supportedRunDestinations.contains(.watchOSSimulator) {
+                                ForEach(simulatorStore.simulators.filter { $0.matches(filter: .watchOS) }) { sim in
+                                    Button {
+                                        latticeLocalRunDestinationRaw = LatticeLocalRunDestination.watchOSSimulator.rawValue
+                                        selectedSimulatorID = sim.id
+                                    } label: {
+                                        Label(sim.name, systemImage: (localRunDestination == .watchOSSimulator && selectedSimulatorID == sim.id) ? "checkmark" : "applewatch")
                                     }
                                 }
                             }
                         }
-                    } label: {
+                    }
+
+                    if supportedRunDestinations.contains(.iOSDevice) {
+                        Section("Connected devices") {
+                            if devicesForToolbar.isEmpty {
+                                Text("No connected devices")
+                            } else {
+                                ForEach(devicesForToolbar) { device in
+                                    Button {
+                                        latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSDevice.rawValue
+                                        selectedSimulatorID = device.id
+                                    } label: {
+                                        Label(device.label, systemImage: (localRunDestination == .iOSDevice && selectedSimulatorID == device.id) ? "checkmark" : device.menuSymbolName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: localRunDestination == .macOS ? "laptopcomputer" : (localRunDestination == .iOSDevice ? "iphone.gen3" : "iphone"))
+                            .font(.caption2)
                         Text(runTargetLabel)
-                            .font(.caption)
+                            .font(.caption2.weight(.semibold))
                             .lineLimit(1)
                     }
-                    .menuStyle(.borderlessButton)
                 }
+                .controlSize(.small)
             }
-            if !showProjectHub {
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showProjectHub = true
-                    } label: {
-                        Image(systemName: "square.grid.2x2")
-                    }
-                    .help("Project Hub")
-                }
-            }
-            if hasSelectedProject {
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showConsoleSheet = true
-                    } label: {
-                        Image(systemName: "terminal")
-                    }
-                    .help("Console for this project")
-                }
-            }
+        }
+        if hasSelectedProject, !showProjectHub {
             ToolbarItem(placement: .automatic) {
                 Button {
-                    openWindow(id: "lattice-settings")
+                    showConsoleSheet = true
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "terminal")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
                 }
-                .help("Settings")
+                .help("Console for this project")
+                .controlSize(.small)
             }
-            if !showProjectHub {
-                ToolbarItem(placement: .automatic) {
-                    Button { showProjectPanel.toggle() } label: {
-                        Image(systemName: showProjectPanel ? "sidebar.trailing" : "sidebar.right")
-                    }
-                    .help(showProjectPanel ? "Hide Project" : "Show Project")
+            // TODO(lattice-history-ui): Restore this toolbar entry after full regression pass.
+        }
+        if !showProjectHub {
+            ToolbarItem(placement: .automatic) {
+                Button { showProjectPanel.toggle() } label: {
+                    Image(systemName: showProjectPanel ? "sidebar.trailing" : "sidebar.right")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
                 }
+                .help(showProjectPanel ? "Hide Project" : "Show Project")
+                .controlSize(.small)
             }
         }
-        .inspector(isPresented: $showProjectPanel) {
-            ProjectInspectorView(
-                selectedProjectPath: $selectedProjectPath,
-                developmentTeam: $latticeDevelopmentTeam,
-                bundleIdentifierOverride: $latticeBundleIdentifierOverride,
-                discoveredDevelopmentTeams: discoveredDevelopmentTeams,
-                showSigningHelpPopover: $showSigningHelpPopover
-            )
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
+        if !showProjectHub {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showProjectHub = true
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .help("Project Hub")
+                .controlSize(.small)
+            }
         }
-        .frame(minWidth: 720, minHeight: 520)
-        .overlay {
-            if showProjectHub {
-                ProjectHubView(
-                    recentStore: recentStore,
+        ToolbarItem(placement: .automatic) {
+            Button {
+                openWindow(id: "lattice-settings")
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 30, height: 30)
+            }
+            .help("Settings")
+            .controlSize(.small)
+        }
+    }
+
+    private var chatSurfaceWithSheets: some View {
+        mainChatStack
+            .animation(.spring(response: 0.32, dampingFraction: 0.86), value: directRunBanner != nil)
+            .preferredColorScheme(preferredAppearance)
+            .tint(accentTint)
+            .sheet(isPresented: $showConsoleSheet) {
+                consoleSheetRoot
+            }
+            .toolbar { latticeMainToolbar }
+    }
+
+    private var layeredMainInterface: some View {
+        chatSurfaceWithSheets
+            .inspector(isPresented: $showProjectPanel) {
+                ProjectInspectorView(
+                    chatViewModel: viewModel,
                     selectedProjectPath: $selectedProjectPath,
-                    showProjectHub: $showProjectHub
+                    developmentTeam: $latticeDevelopmentTeam,
+                    bundleIdentifierOverride: $latticeBundleIdentifierOverride,
+                    discoveredDevelopmentTeams: discoveredDevelopmentTeams,
+                    showSigningHelpPopover: $showSigningHelpPopover,
+                    onAskLatticeToFix: { message in
+                        showProjectPanel = true
+                        viewModel.send(message, apiKey: activeAPIKey, context: chatContext)
+                    }
                 )
-                .transition(
-                    reduceMotion
-                        ? .opacity
-                        : .asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity)
-                )
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
             }
-        }
-        .overlay(alignment: .bottom) {
-            if showCopyToast {
-                Label(copyToastText, systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+            .frame(minWidth: 720, minHeight: 520)
+            .overlay {
+                if showProjectHub {
+                    ProjectHubView(
+                        recentStore: recentStore,
+                        selectedProjectPath: $selectedProjectPath,
+                        showProjectHub: $showProjectHub
                     )
-                    .padding(.bottom, 18)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity)
+                    )
+                }
             }
-        }
-        .animation(.easeInOut(duration: 0.2), value: showProjectHub)
+            .overlay(alignment: .bottom) {
+                if showCopyToast {
+                    Label(copyToastText, systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+                        )
+                        .padding(.bottom, 18)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: showProjectHub)
+    }
+
+    var body: some View {
+        layeredMainInterface
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 viewModel.persistSession()
@@ -1114,17 +1634,23 @@ struct ContentView: View {
             }
         }
         .onChange(of: showProjectPanel) { _, isOpen in
+            sidebarLayoutScrollToken &+= 1
             if !isOpen && selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 showProjectHub = true
             }
         }
         .onChange(of: selectedProjectPath) { old, new in
+            let canonical = ChatSessionPersistence.canonicalProjectPath(new)
+            if !canonical.isEmpty, canonical != new {
+                selectedProjectPath = canonical
+                return
+            }
             viewModel.syncProjectPath(new)
             consoleStore.setVisibleProject(path: new)
             directRunBanner = nil
             directRunBannerIsError = false
-            let trimmed = new.trimmingCharacters(in: .whitespacesAndNewlines)
-            let oldTrimmed = old.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = ChatSessionPersistence.canonicalProjectPath(new)
+            let oldTrimmed = ChatSessionPersistence.canonicalProjectPath(old)
             if trimmed.isEmpty {
                 showProjectHub = true
                 supportedRunDestinations = .allRunDestinations
@@ -1165,32 +1691,6 @@ struct ContentView: View {
                !selectedSimulatorID.isEmpty,
                !devicesForToolbar.contains(where: { $0.id == selectedSimulatorID }) {
                 selectedSimulatorID = ""
-            }
-        }
-    }
-
-    private var buildRunBackdrop: some View {
-        Group {
-            if reduceMotion {
-                Color.clear
-            } else {
-                ZStack {
-                    LinearGradient(
-                        colors: [
-                            Color.accentColor.opacity(0.14),
-                            Color.clear,
-                            Color.purple.opacity(0.1),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    RadialGradient(
-                        colors: [Color.orange.opacity(0.08), Color.clear],
-                        center: .topTrailing,
-                        startRadius: 20,
-                        endRadius: 420
-                    )
-                }
             }
         }
     }
@@ -1362,9 +1862,9 @@ struct ContentView: View {
                 contextProjectTitle(folderShort: folderShort, path: projectRoot)
 
                 Rectangle()
-                    .fill(Color.secondary.opacity(0.35))
+                    .fill(Color.secondary.opacity(0.24))
                     .frame(width: 1, height: 14)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 14)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(prov.displayName)
@@ -1376,16 +1876,20 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
                 .frame(minWidth: 120, alignment: .leading)
-                .padding(.trailing, 20)
+                .padding(.trailing, 18)
 
                 HStack(spacing: 10) {
                     contextRunPill(icon: simIcon, title: "Run target", value: simLabel)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
         }
-        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.14))
+                .frame(height: 1)
+        }
     }
 
     private func contextProjectTitle(folderShort: String, path: String) -> some View {
@@ -1429,69 +1933,107 @@ struct ContentView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
-        )
     }
 
     // MARK: - Message list
 
+    private var transcriptEmptyPlaceholder: some View {
+        VStack(alignment: .center, spacing: 10) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 28))
+                .foregroundStyle(.tertiary)
+                .symbolRenderingMode(.hierarchical)
+            Text("No messages in this project yet")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("Type below to talk to Lattice. If you expected history here, confirm the correct folder is selected in the toolbar or Project sidebar.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+        .accessibilityElement(children: .combine)
+    }
+
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(buildChatDisplayRows(from: viewModel.items)) { row in
-                        Group {
-                            switch row {
-                            case .user(let item):
-                                HStack(alignment: .top, spacing: 0) {
-                                    Spacer(minLength: 0)
-                                    ChatItemView(item: item)
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 1).id("transcriptTop")
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if viewModel.items.isEmpty {
+                            transcriptEmptyPlaceholder
+                        }
+                        ForEach(buildChatDisplayRows(from: viewModel.items)) { row in
+                            Group {
+                                switch row {
+                                case .user(let item):
+                                    HStack(alignment: .top, spacing: 0) {
+                                        Spacer(minLength: 0)
+                                        ChatItemView(item: item)
+                                    }
+                                    .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                case .working(let item):
+                                    TransientWorkingRow(item: item, reduceMotion: reduceMotion)
+                                        .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                case .assistantTurn(_, let items):
+                                    AssistantTurnCard(
+                                        items: items,
+                                        reduceMotion: reduceMotion,
+                                        pendingRetry: viewModel.pendingRetry,
+                                        onRetry: {
+                                            viewModel.performRetry(apiKey: activeAPIKey, context: chatContext)
+                                        }
+                                    )
+                                        .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                            case .working(let item):
-                                TransientWorkingRow(item: item, reduceMotion: reduceMotion)
-                                    .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            case .assistantTurn(_, let items):
-                                AssistantTurnCard(items: items, reduceMotion: reduceMotion)
-                                    .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
-
-                    Color.clear.frame(height: 1).id("bottom")
+                    Color.clear.frame(height: 1).id("transcriptBottom")
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
             }
             .background(.thinMaterial.opacity(0.45))
-            .onChange(of: viewModel.changeCount) { _, _ in
-                withAnimation(.easeOut(duration: 0.1)) {
-                    proxy.scrollTo("bottom")
+            .onChange(of: viewModel.transcriptScrollToBottomToken) { _, _ in
+                // Do not force-scroll while generating: let users inspect earlier messages.
+                if viewModel.isRunning { return }
+                var tx = Transaction()
+                tx.disablesAnimations = true
+                withTransaction(tx) {
+                    proxy.scrollTo("transcriptBottom", anchor: .bottom)
                 }
             }
+            .onChange(of: sidebarLayoutScrollToken) { _, _ in
+                var tx = Transaction()
+                tx.disablesAnimations = true
+                withTransaction(tx) {
+                    proxy.scrollTo("transcriptBottom", anchor: .bottom)
+                }
+            }
+            .textSelection(.disabled)
         }
     }
 
     // MARK: - Input bar
 
     private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .bottom, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 0) {
                 TextField("Message…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...8)
-                    .padding(.leading, 14)
+                    .padding(.leading, 12)
                     .padding(.trailing, 6)
                     .padding(.vertical, 10)
+                    .frame(minHeight: 42, alignment: .center)
                     .onKeyPress(.return, phases: .down) { keyPress in
                         if keyPress.modifiers.contains(.shift) {
                             input += "\n"
@@ -1508,22 +2050,38 @@ struct ContentView: View {
                         viewModel.stop()
                     }
                 }) {
-                    Image(systemName: viewModel.isRunning && !hasInputText ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(canSend ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
-                        .padding(.trailing, 10)
-                        .padding(.vertical, 6)
+                    Group {
+                        if viewModel.isRunning && !hasInputText {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(canSend ? Color.white : Color.secondary)
+                                .frame(width: 34, height: 34)
+                                .background {
+                                    Circle().fill(canSend ? Color.red.opacity(0.9) : Color.primary.opacity(0.12))
+                                }
+                        } else {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(canSend ? Color.white : Color.secondary)
+                                .frame(width: 34, height: 34)
+                                .background {
+                                    if canSend {
+                                        Circle().fill(Color.accentColor.gradient)
+                                    } else {
+                                        Circle().fill(Color.primary.opacity(0.12))
+                                    }
+                                }
+                                .shadow(color: canSend ? Color.accentColor.opacity(0.40) : .clear, radius: 8, y: 1)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
+                .help(viewModel.isRunning && !hasInputText ? "Stop" : "Send")
+                .padding(.trailing, 6)
+                .padding(.vertical, 2)
             }
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+            .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.12, shadowOpacity: 0.08)
 
             Text(composerTips[composerTipIndex % composerTips.count])
                 .font(.caption2)
@@ -1532,9 +2090,9 @@ struct ContentView: View {
                 .opacity(latticeShowComposerTips ? 1 : 0)
                 .accessibilityHidden(!latticeShowComposerTips)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
         .opacity(canSend || viewModel.isRunning ? 1 : 0.55)
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             composerTipIndex += 1
@@ -1546,10 +2104,15 @@ struct ContentView: View {
     }
 
     private var canSend: Bool {
-        !activeAPIKey.isEmpty && (hasInputText || viewModel.isRunning)
+        guard !activeAPIKey.isEmpty else { return false }
+        if viewModel.isRunning {
+            return !hasInputText
+        }
+        return hasInputText
     }
 
     private func sendMessage() {
+        guard !viewModel.isRunning else { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         input = ""
@@ -1789,6 +2352,11 @@ private func normalizeAssistantText(_ raw: String) -> String {
     return s.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+/// While tokens stream in, skip heavy markdown cleanup (regex over the full buffer every chunk).
+private func assistantStreamDisplayText(_ raw: String) -> String {
+    raw.replacingOccurrences(of: "\r\n", with: "\n")
+}
+
 private struct MarkdownBlock: View {
     let text: String
     var isStreaming: Bool = false
@@ -1801,16 +2369,16 @@ private struct MarkdownBlock: View {
                     ProgressView().scaleEffect(0.75)
                 }
             } else if isStreaming {
-                Text(normalizeAssistantText(text))
+                Text(assistantStreamDisplayText(text))
                     .font(.body)
-                    .textSelection(.enabled)
+                    .textSelection(.disabled)
                     .frame(maxWidth: .infinity, alignment: frameAlignment)
                     .multilineTextAlignment(multilineTextAlignment)
                     .lineSpacing(4)
             } else {
                 Text(normalizeAssistantText(text))
                     .font(.body)
-                    .textSelection(.enabled)
+                    .textSelection(.disabled)
                     .frame(maxWidth: .infinity, alignment: frameAlignment)
                     .lineSpacing(5)
                     .multilineTextAlignment(multilineTextAlignment)
@@ -1892,25 +2460,6 @@ private func latticeFriendlyToolSubtitle(name: String, input: String) -> String 
     return oneLine
 }
 
-private func latticeToolRunSummaryLine(tools: [ChatItem]) -> String {
-    var parts: [String] = []
-    for item in tools.prefix(4) {
-        guard case .tool(let name, let input, _, _, _) = item.kind else { continue }
-        let sub = latticeFriendlyToolSubtitle(name: name, input: input)
-        if sub.isEmpty {
-            parts.append(name)
-        } else {
-            parts.append("\(name) \(sub)")
-        }
-    }
-    let head = parts.joined(separator: " · ")
-    let extra = tools.count - parts.count
-    if extra > 0 {
-        return head.isEmpty ? "+\(extra)" : "\(head)  +\(extra)"
-    }
-    return head
-}
-
 /// Assistant markdown: its own light surface so long replies are not one giant slab with tools.
 private struct AssistantProseCard: View {
     let text: String
@@ -1927,7 +2476,7 @@ private struct AssistantProseCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             if isErrorText {
                 Label("Something went wrong", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.weight(.semibold))
@@ -1935,7 +2484,7 @@ private struct AssistantProseCard: View {
             }
             MarkdownBlock(text: text, isStreaming: streaming)
             if streaming, !text.isEmpty {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Capsule()
                         .fill(Color.accentColor.opacity(0.35))
                         .frame(width: 22, height: 4)
@@ -1948,8 +2497,8 @@ private struct AssistantProseCard: View {
                 .onAppear { streamPulse = true }
             }
         }
-        .padding(.horizontal, unifiedTurn ? 2 : 11)
-        .padding(.vertical, unifiedTurn ? 6 : 9)
+        .padding(.horizontal, unifiedTurn ? 2 : 14)
+        .padding(.vertical, unifiedTurn ? 6 : 12)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
         .background(proseBackground)
         .overlay(proseStroke)
@@ -1958,30 +2507,27 @@ private struct AssistantProseCard: View {
     @ViewBuilder
     private var proseBackground: some View {
         if unifiedTurn {
-            if isErrorText {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.orange.opacity(0.08))
-            } else {
-                Color.clear
-            }
+            Color.clear
         } else {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isErrorText ? Color.orange.opacity(0.08) : Color.primary.opacity(0.045))
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .fill(.ultraThinMaterial)
         }
     }
 
     @ViewBuilder
     private var proseStroke: some View {
-        if unifiedTurn {
-            if isErrorText {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
-            } else {
-                EmptyView()
-            }
+        if isErrorText {
+            RoundedRectangle(cornerRadius: unifiedTurn ? 12 : LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+                .background(
+                    RoundedRectangle(cornerRadius: unifiedTurn ? 12 : LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                        .fill(Color.orange.opacity(0.08))
+                )
+        } else if !unifiedTurn {
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
         } else {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isErrorText ? Color.orange.opacity(0.35) : Color.secondary.opacity(0.14), lineWidth: 1)
+            EmptyView()
         }
     }
 }
@@ -1992,20 +2538,20 @@ private struct TransientWorkingRow: View {
     @State private var pulse = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 8) {
             Image(systemName: "sparkle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+                .frame(width: 20, height: 20)
                 .background(Color.secondary.opacity(0.14), in: Circle())
                 .symbolEffect(.variableColor.iterative, options: .repeating, isActive: !reduceMotion)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Thinking")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.primary)
                 Capsule()
                     .fill(Color.accentColor.opacity(0.35))
-                    .frame(width: 34, height: 5)
+                    .frame(width: 30, height: 4)
                     .opacity(reduceMotion ? 1 : (pulse ? 0.35 : 1))
                     .animation(
                         reduceMotion ? .default : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
@@ -2016,11 +2562,22 @@ private struct TransientWorkingRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.primary.opacity(0.14),
+                            Color.accentColor.opacity(0.22)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
+        .shadow(color: .black.opacity(0.07), radius: 10, y: 3)
         .id(item.id)
         .onAppear { pulse = true }
     }
@@ -2033,8 +2590,21 @@ private struct ReasoningCollapsibleCard: View {
     var unifiedTurn: Bool = false
     @State private var expanded = false
 
+    private var previewSnippet: String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+        let firstLine = t.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? t
+        let cleaned = streaming ? assistantStreamDisplayText(firstLine) : normalizeAssistantText(firstLine)
+        if cleaned.count > 72 { return String(cleaned.prefix(69)) + "…" }
+        return cleaned
+    }
+
+    private var fullReasoningText: String {
+        streaming ? assistantStreamDisplayText(text) : normalizeAssistantText(text)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Button {
                 if reduceMotion {
                     expanded.toggle()
@@ -2044,68 +2614,87 @@ private struct ReasoningCollapsibleCard: View {
                     }
                 }
             } label: {
-                HStack {
-                    Label(streaming ? "Thinking" : "Thought", systemImage: "brain.head.profile")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    if streaming {
-                        ProgressView()
-                            .scaleEffect(0.7)
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .background(Color.secondary.opacity(0.14), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(streaming ? "Thinking" : "Thought")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            if streaming {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            }
+                        }
+                        if text.isEmpty, streaming {
+                            Text("…")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else if !previewSnippet.isEmpty {
+                            Text(previewSnippet)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(streaming ? 2 : 1)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
+
+                    Spacer(minLength: 4)
+
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(unifiedTurn ? Color.primary.opacity(0.05) : Color.secondary.opacity(0.1))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(unifiedTurn ? 0.10 : 0.2), lineWidth: 1)
+                )
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            if expanded || streaming {
+            if expanded {
                 if text.isEmpty, streaming {
                     Text("…")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                        .padding(.leading, 4)
                 } else {
-                    Text(normalizeAssistantText(text))
+                    Text(fullReasoningText)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                        .textSelection(.disabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineSpacing(4)
+                        .padding(.leading, 4)
                 }
             }
         }
-        .padding(.horizontal, unifiedTurn ? 2 : 10)
-        .padding(.vertical, unifiedTurn ? 6 : 8)
+        .padding(.horizontal, unifiedTurn ? 2 : 6)
+        .padding(.vertical, unifiedTurn ? 4 : 6)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
-        .background(reasoningBackground)
-        .overlay(reasoningStroke)
-        .onAppear {
-            if streaming { expanded = true }
-        }
         .onChange(of: streaming) { _, isStreaming in
-            if isStreaming { expanded = true }
-        }
-    }
-
-    @ViewBuilder
-    private var reasoningBackground: some View {
-        if unifiedTurn {
-            Color.clear
-        } else {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.secondary.opacity(0.12))
-        }
-    }
-
-    @ViewBuilder
-    private var reasoningStroke: some View {
-        if unifiedTurn {
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+            if !isStreaming {
+                if reduceMotion {
+                    expanded = false
+                } else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        expanded = false
+                    }
+                }
+            }
         }
     }
 }
@@ -2124,20 +2713,21 @@ private struct LatticeToolActivitySection<Content: View>: View {
         Group {
             if unifiedTurn {
                 content()
-                    .padding(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                content()
-                    .padding(6)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.secondary.opacity(0.14))
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color.primary.opacity(0.04))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                     )
+            } else {
+                content()
+                    .padding(5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -2147,9 +2737,92 @@ private struct LatticeToolActivitySection<Content: View>: View {
 private struct AssistantTurnCard: View {
     let items: [ChatItem]
     var reduceMotion: Bool = false
+    var pendingRetry: PendingRetryState?
+    var onRetry: () -> Void
+
+    @State private var workCollapsed = true
 
     private var pieces: [AssistantTurnPiece] {
         assistantTurnPieces(from: items)
+    }
+
+    private var isTurnComplete: Bool {
+        for item in items {
+            switch item.kind {
+            case .assistant(_, let streaming):
+                if streaming { return false }
+            case .reasoning(_, let streaming):
+                if streaming { return false }
+            case .tool(_, _, _, _, let running):
+                if running { return false }
+            default:
+                break
+            }
+        }
+        return true
+    }
+
+    private var hasCollapsibleWork: Bool {
+        for piece in pieces {
+            switch piece {
+            case .reasoning(let item):
+                if case .reasoning(let text, _) = item.kind,
+                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return true
+                }
+            case .tools(let run):
+                if !run.isEmpty { return true }
+            default:
+                break
+            }
+        }
+        return false
+    }
+
+    private var reasoningPieceCount: Int {
+        pieces.reduce(into: 0) { n, piece in
+            if case .reasoning(let item) = piece,
+               case .reasoning(let text, _) = item.kind,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                n += 1
+            }
+        }
+    }
+
+    private var toolStepCount: Int {
+        pieces.reduce(into: 0) { n, piece in
+            if case .tools(let run) = piece { n += run.count }
+        }
+    }
+
+    private var collapsedWorkSummary: String {
+        let r = reasoningPieceCount
+        let t = toolStepCount
+        switch (r > 0, t > 0) {
+        case (true, true):
+            return t == 1 ? "Thought · 1 tool" : "Thought · \(t) tools"
+        case (true, false):
+            return "Thought"
+        case (false, true):
+            return t == 1 ? "1 tool" : "\(t) tools"
+        default:
+            return "Details"
+        }
+    }
+
+    private var visiblePieces: [AssistantTurnPiece] {
+        guard isTurnComplete, workCollapsed, hasCollapsibleWork else { return pieces }
+        return pieces.filter {
+            switch $0 {
+            case .assistant: return true
+            case .reasoning, .tools: return false
+            }
+        }
+    }
+
+    private var showsRetry: Bool {
+        guard let pendingRetry else { return false }
+        return items.contains { $0.id == pendingRetry.errorItemId }
     }
 
     var body: some View {
@@ -2157,30 +2830,108 @@ private struct AssistantTurnCard: View {
             Image(systemName: "sparkle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 18, alignment: .leading)
-                .padding(.top, 3)
+                .frame(width: 16, alignment: .leading)
+                .padding(.top, 6)
 
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(pieces.enumerated()), id: \.element.id) { index, piece in
+                if hasCollapsibleWork, isTurnComplete {
+                    workDisclosureRow
+                        .padding(.bottom, workCollapsed ? 6 : 4)
+                }
+
+                ForEach(Array(visiblePieces.enumerated()), id: \.element.id) { index, piece in
                     turnPiece(piece)
-                    if index < pieces.count - 1 {
+                    if index < visiblePieces.count - 1 {
                         Divider()
-                            .opacity(0.28)
+                            .opacity(0.22)
                             .padding(.vertical, 5)
                     }
                 }
+                if showsRetry {
+                    Button(action: onRetry) {
+                        Label("Retry this response", systemImage: "arrow.clockwise.circle")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .padding(.top, 8)
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.primary.opacity(0.12),
+                                Color.accentColor.opacity(0.18)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: .black.opacity(0.09), radius: 14, y: 4)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 0)
+        .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.17), lineWidth: 1)
-        )
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            workCollapsed = isTurnComplete
+        }
+        .onChange(of: isTurnComplete) { _, done in
+            if done, hasCollapsibleWork {
+                if reduceMotion {
+                    workCollapsed = true
+                } else {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                        workCollapsed = true
+                    }
+                }
+            } else if !done {
+                workCollapsed = false
+            }
+        }
+    }
+
+    private var workDisclosureRow: some View {
+        Button {
+            if reduceMotion {
+                workCollapsed.toggle()
+            } else {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                    workCollapsed.toggle()
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: workCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14, alignment: .center)
+                Text(workCollapsed ? collapsedWorkSummary : "Hide reasoning & tools")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.17), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -2196,149 +2947,67 @@ private struct AssistantTurnCard: View {
             }
         case .tools(let toolItems):
             LatticeToolActivitySection(unifiedTurn: true) {
-                if toolItems.count >= latticeToolRunBatchThreshold {
-                    ToolActivityBatchView(tools: toolItems, reduceMotion: reduceMotion)
-                } else {
-                    ForEach(toolItems) { t in
-                        if case .tool(let name, let input, let output, let isError, let isRunning) = t.kind {
-                            ToolActivityRow(
-                                stableId: t.id,
-                                name: name,
-                                input: input,
-                                output: output,
-                                isError: isError,
-                                isRunning: isRunning,
-                                reduceMotion: reduceMotion
-                            )
-                        }
-                    }
-                }
+                ToolActivityTimelineView(tools: toolItems, reduceMotion: reduceMotion)
             }
         }
     }
 }
 
-/// Collapses many consecutive tool steps into one row; expand to see each `ToolActivityRow`.
-private struct ToolActivityBatchView: View {
+/// Vertical tool run with status dots and connectors between steps.
+private struct ToolActivityTimelineView: View {
     let tools: [ChatItem]
     var reduceMotion: Bool = false
-    @State private var expanded = false
-
-    @Environment(\.accessibilityReduceMotion) private var envReduceMotion
-
-    private var effectiveReduceMotion: Bool { reduceMotion || envReduceMotion }
+    @State private var expandedOutputStepId: UUID?
 
     private var expandAnimation: Animation {
-        effectiveReduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.38, dampingFraction: 0.86)
-    }
-
-    private var stepCount: Int { tools.count }
-
-    private var anyRunning: Bool {
-        tools.contains { if case .tool(_, _, _, _, let running) = $0.kind { return running }; return false }
-    }
-
-    private var anyError: Bool {
-        tools.contains { if case .tool(_, _, _, let err, _) = $0.kind { return err }; return false }
-    }
-
-    private var errorCount: Int {
-        tools.reduce(into: 0) { n, item in
-            if case .tool(_, _, _, let err, _) = item.kind, err { n += 1 }
-        }
-    }
-
-    private var summaryLine: String {
-        let s = latticeToolRunSummaryLine(tools: tools)
-        return s.isEmpty ? "Tap to expand" : s
+        reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.32, dampingFraction: 0.9)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                expanded.toggle()
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "square.stack.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14, alignment: .center)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(stepCount) steps")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            if anyError {
-                                Text(errorCount == 1 ? "1 failed" : "\(errorCount) failed")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.orange)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.18), in: Capsule())
+        let timeline = VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(tools.enumerated()), id: \.element.id) { index, t in
+                if case .tool(let name, let input, let output, let isError, let isRunning) = t.kind {
+                    ToolTimelineStepRow(
+                        isFirst: index == 0,
+                        isLast: index == tools.count - 1,
+                        stableId: t.id,
+                        name: name,
+                        input: input,
+                        output: output,
+                        isError: isError,
+                        isRunning: isRunning,
+                        reduceMotion: reduceMotion,
+                        outputExpanded: expandedOutputStepId == t.id,
+                        onToggleOutput: {
+                            if reduceMotion {
+                                expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                            } else {
+                                withAnimation(expandAnimation) {
+                                    expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                                }
                             }
                         }
-                        Text(summaryLine)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if anyRunning {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                    )
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if expanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(tools) { t in
-                        if case .tool(let name, let input, let output, let isError, let isRunning) = t.kind {
-                            ToolActivityRow(
-                                stableId: t.id,
-                                name: name,
-                                input: input,
-                                output: output,
-                                isError: isError,
-                                isRunning: isRunning,
-                                reduceMotion: effectiveReduceMotion
-                            )
-                        }
-                    }
-                }
-                .padding(.top, 4)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .move(edge: .top)),
-                    removal: .opacity.combined(with: .move(edge: .top))
-                ))
             }
         }
-        .padding(4)
-        .animation(expandAnimation, value: expanded)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(anyError ? 0.28 : 0.14), lineWidth: 1)
-        )
-        .id(tools.map(\.id.uuidString).joined(separator: "-"))
+
+        Group {
+            if tools.count > 6 {
+                ScrollView {
+                    timeline
+                }
+                .frame(maxHeight: 280)
+            } else {
+                timeline
+            }
+        }
     }
 }
 
-/// Single tool step: tight row, disclosure expands only this row (no shared flex / lazy height coupling).
-private struct ToolActivityRow: View {
+private struct ToolTimelineStepRow: View {
+    let isFirst: Bool
+    let isLast: Bool
     let stableId: UUID
     let name: String
     let input: String
@@ -2346,107 +3015,15 @@ private struct ToolActivityRow: View {
     let isError: Bool
     let isRunning: Bool
     var reduceMotion: Bool = false
-
-    @State private var showOutput = false
-
-    private var rowExpandAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.32, dampingFraction: 0.9)
-    }
+    let outputExpanded: Bool
+    let onToggleOutput: () -> Void
 
     private var displayInput: String {
         latticeFriendlyToolSubtitle(name: name, input: input)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                guard let out = output, !out.isEmpty, !isRunning else { return }
-                showOutput.toggle()
-            } label: {
-                HStack(alignment: .center, spacing: 6) {
-                    Image(systemName: toolIcon)
-                        .font(.caption2)
-                        .foregroundStyle(isError ? Color.orange.opacity(0.95) : Color.secondary)
-                        .frame(width: 14, alignment: .center)
-
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(name)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        if !displayInput.isEmpty {
-                            Text(displayInput)
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if isRunning {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else if output != nil {
-                        Image(systemName: showOutput ? "chevron.up" : "chevron.down")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isRunning || (output?.isEmpty ?? true))
-
-            if showOutput, let out = output, !out.isEmpty {
-                Group {
-                    Divider()
-                        .opacity(0.35)
-                    HStack(alignment: .top, spacing: 0) {
-                        ScrollView {
-                            Text(out)
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(isError ? Color.orange : .primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.leading, 10)
-                                .padding(.vertical, 8)
-                        }
-                        .frame(maxHeight: 140, alignment: .top)
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(out, forType: .string)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(8)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Copy output")
-                    }
-                }
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .move(edge: .top)),
-                    removal: .opacity.combined(with: .move(edge: .top))
-                ))
-            }
-        }
-        .animation(rowExpandAnimation, value: showOutput)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    isError ? Color.orange.opacity(0.32) : Color.primary.opacity(0.06),
-                    lineWidth: 1
-                )
-        )
-        .id(stableId)
+    private var rowExpandAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.32, dampingFraction: 0.9)
     }
 
     private var toolIcon: String {
@@ -2456,6 +3033,141 @@ private struct ToolActivityRow: View {
         case "write_file": return "square.and.pencil"
         default: return "wrench.and.screwdriver"
         }
+    }
+
+    @ViewBuilder
+    private var timelineDot: some View {
+        ZStack {
+            if isRunning {
+                Circle()
+                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 2)
+                    .frame(width: 14, height: 14)
+                Circle()
+                    .fill(Color.accentColor.opacity(0.95))
+                    .frame(width: 7, height: 7)
+            } else if isError {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.orange)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.green.opacity(0.88))
+            }
+        }
+        .frame(width: 18, height: 16)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                if !isFirst {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.22))
+                        .frame(width: 2, height: 8)
+                }
+                timelineDot
+                if !isLast {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.22))
+                        .frame(width: 2)
+                        .frame(minHeight: 18)
+                }
+            }
+            .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    guard let out = output, !out.isEmpty, !isRunning else { return }
+                    onToggleOutput()
+                } label: {
+                    HStack(alignment: .center, spacing: 6) {
+                        Image(systemName: toolIcon)
+                            .font(.caption2)
+                            .foregroundStyle(isError ? Color.orange.opacity(0.95) : Color.secondary)
+                            .frame(width: 14, alignment: .center)
+
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(name)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if !displayInput.isEmpty {
+                                Text(displayInput)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if isRunning {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else if output != nil, !(output?.isEmpty ?? true) {
+                            Image(systemName: outputExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRunning || (output?.isEmpty ?? true))
+
+                if outputExpanded, let out = output, !out.isEmpty {
+                    Group {
+                        Divider()
+                            .opacity(0.35)
+                        HStack(alignment: .top, spacing: 0) {
+                            ScrollView {
+                                Text(out)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(isError ? Color.orange : .primary)
+                                    .textSelection(.disabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 8)
+                                    .padding(.vertical, 6)
+                            }
+                            .frame(maxHeight: 120, alignment: .top)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(out, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(8)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy output")
+                        }
+                    }
+                    .padding(.bottom, 4)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    ))
+                }
+            }
+            .animation(rowExpandAnimation, value: outputExpanded)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.primary.opacity(isError ? 0.05 : 0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(
+                        isError ? Color.orange.opacity(0.20) : Color.primary.opacity(0.08),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .padding(.vertical, 2)
+        .id(stableId)
     }
 }
 
@@ -2481,29 +3193,72 @@ struct ChatItemView: View {
     }
 }
 
+/// Sizes user `Text` to its natural width when short; only grows up to `maxContentWidth` when wrapping is needed.
+/// (Plain `.frame(maxWidth:)` on `Text` still often adopts the cap width under a wide layout proposal from `LazyVStack`.)
+private struct ShrinkWrappedBubbleTextLayout: Layout {
+    var maxContentWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let sub = subviews.first else { return .zero }
+        let cap = min(proposal.width ?? .infinity, maxContentWidth)
+        let natural = sub.sizeThatFits(.unspecified)
+        if natural.width <= cap {
+            return natural
+        }
+        let wrapped = sub.sizeThatFits(ProposedViewSize(width: cap, height: proposal.height))
+        return CGSize(width: min(wrapped.width, cap), height: wrapped.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let sub = subviews.first else { return }
+        sub.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+}
+
 struct UserBubble: View {
     let text: String
     var reduceMotion: Bool = false
 
+    private var innerTextMaxWidth: CGFloat {
+        max(44, latticeUserBubbleMaxWidth - 28)
+    }
+
     var body: some View {
-        Text(text)
-            .font(.body)
-            .textSelection(.enabled)
-            .multilineTextAlignment(.trailing)
-            .lineSpacing(5)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.accentColor.gradient)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(reduceMotion ? 0 : 0.12), radius: 6, y: 2)
-            .frame(minWidth: 0, maxWidth: latticeUserBubbleMaxWidth, alignment: .trailing)
+        ShrinkWrappedBubbleTextLayout(maxContentWidth: innerTextMaxWidth) {
+            Text(text)
+                .font(.body)
+                .textSelection(.disabled)
+                .multilineTextAlignment(.leading)
+                .lineSpacing(4)
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .fill(Color.accentColor.opacity(0.20))
+        )
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.accentColor.opacity(0.45),
+                            Color.primary.opacity(0.12)
+                        ],
+                        startPoint: .topTrailing,
+                        endPoint: .bottomLeading
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: Color.accentColor.opacity(0.08), radius: 10, y: 3)
+        .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
     }
 }
 
@@ -2514,17 +3269,17 @@ struct AssistantBubble: View {
     @State private var streamPulse = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: "sparkle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.top, 6)
+                .padding(.top, 4)
                 .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isStreaming && !reduceMotion)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 MarkdownBlock(text: text, isStreaming: isStreaming)
                 if isStreaming, !text.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Capsule()
                             .fill(Color.accentColor.opacity(0.35))
                             .frame(width: 28, height: 5)
@@ -2545,13 +3300,24 @@ struct AssistantBubble: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.primary.opacity(0.12),
+                                Color.accentColor.opacity(0.20)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
             )
+            .shadow(color: .black.opacity(0.07), radius: 12, y: 3)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: 12)
         }
     }
 }
@@ -2635,7 +3401,7 @@ struct ToolCard: View {
                     Text(out)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(isError ? .red : .primary)
-                        .textSelection(.enabled)
+                        .textSelection(.disabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                 }
@@ -2681,12 +3447,25 @@ struct ToolCard: View {
 
 // MARK: - Supporting views
 
+/// macOS 26+ Liquid Glass for inspector chrome; earlier OS uses bordered.
+private struct LatticeChromeButtonModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+    }
+}
+
 struct ProjectInspectorView: View {
+    @ObservedObject var chatViewModel: ChatViewModel
     @Binding var selectedProjectPath: String
     @Binding var developmentTeam: String
     @Binding var bundleIdentifierOverride: String
     let discoveredDevelopmentTeams: [String]
     @Binding var showSigningHelpPopover: Bool
+    let onAskLatticeToFix: (String) -> Void
 
     @State private var openingXcode = false
     @State private var showXcodeAlert = false
@@ -2700,15 +3479,108 @@ struct ProjectInspectorView: View {
     @State private var identityApplyBusy = false
     @State private var identityError: String?
 
+    @State private var pendingAppIcon: NSImage?
+    @State private var appIconStatus: String?
+    @State private var appIconBusy = false
+
+    @State private var resolvedBundleIdentifier = ""
+    @State private var bundleIdentifierLoading = false
+    @State private var assistantHintNotice: String?
+
+    private var projectIconSquircleSize: CGFloat { 52 }
+
     var body: some View {
         Form {
             Section {
+                if !selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(alignment: .top, spacing: 14) {
+                        Image(nsImage: sidebarAppMarkImage())
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: projectIconSquircleSize, height: projectIconSquircleSize)
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: projectIconSquircleSize * 0.2237,
+                                    style: .continuous
+                                )
+                            )
+                            .overlay(
+                                RoundedRectangle(
+                                    cornerRadius: projectIconSquircleSize * 0.2237,
+                                    style: .continuous
+                                )
+                                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                            )
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            if bundleIdentifierLoading {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Resolving bundle ID…")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else if !resolvedBundleIdentifier.isEmpty {
+                                Text("Bundle ID (from Xcode)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                                Text(resolvedBundleIdentifier)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                    .lineLimit(4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                Text("Bundle ID not available until Xcode can read this project (see errors below if any).")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            HStack(spacing: 8) {
+                                Button("Choose app icon…") { pickInspectorAppIcon() }
+                                    .modifier(LatticeChromeButtonModifier())
+                                    .controlSize(.small)
+                                if pendingAppIcon != nil {
+                                    Button("Clear icon") {
+                                        pendingAppIcon = nil
+                                        appIconStatus = nil
+                                    }
+                                    .modifier(LatticeChromeButtonModifier())
+                                    .controlSize(.small)
+                                    Button {
+                                        Task { await applyInspectorAppIcon() }
+                                    } label: {
+                                        if appIconBusy {
+                                            ProgressView().controlSize(.small)
+                                        } else {
+                                            Text("Apply icon")
+                                        }
+                                    }
+                                    .modifier(LatticeChromeButtonModifier())
+                                    .controlSize(.small)
+                                    .disabled(appIconBusy)
+                                }
+                            }
+                            if let appIconStatus {
+                                Text(appIconStatus)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let assistantHintNotice {
+                                Text(assistantHintNotice)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 2)
+                }
+
                 HStack(alignment: .center, spacing: 10) {
                     Button("Choose Folder") { chooseProjectFolder() }
-                    if !selectedProjectPath.isEmpty {
-                        Button("Clear") { selectedProjectPath = "" }
-                            .buttonStyle(.borderless)
-                    }
+                        .modifier(LatticeChromeButtonModifier())
                     Spacer(minLength: 8)
                     Button {
                         Task { await openProjectInXcode() }
@@ -2718,11 +3590,12 @@ struct ProjectInspectorView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             } else {
-                                Label("Open in Xcode", systemImage: "hammer")
+                                Label("Open in Xcode", systemImage: "arrow.up.forward.app.fill")
                             }
                         }
                         .frame(minWidth: openingXcode ? 24 : nil)
                     }
+                    .modifier(LatticeChromeButtonModifier())
                     .disabled(selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || openingXcode)
                     .help("Opens the same .xcworkspace or .xcodeproj Build & Run uses.")
                 }
@@ -2743,7 +3616,7 @@ struct ProjectInspectorView: View {
             } header: {
                 Text("Project")
             } footer: {
-                Text("⌘R builds this folder. Pick the simulator or device in the toolbar; API keys stay under Account.")
+                Text("⌘R builds and runs this project. Pick the simulator or device in the toolbar.")
             }
 
             Section {
@@ -2772,14 +3645,28 @@ struct ProjectInspectorView: View {
                         Text("Apply to Xcode project")
                     }
                 }
+                .modifier(LatticeChromeButtonModifier())
                 .disabled(
                     identityApplyBusy
                         || selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
                 if let identityError {
-                    Text(identityError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(identityError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                        Button("Ask AI to fix") {
+                            let body = """
+                            Project inspector error (please diagnose and fix the Xcode project or tell me exactly what to change in Xcode):
+
+                            \(identityError)
+                            """
+                            onAskLatticeToFix(body)
+                        }
+                        .modifier(LatticeChromeButtonModifier())
+                        .controlSize(.small)
+                    }
                 }
             } header: {
                 Text("App identity")
@@ -2800,7 +3687,7 @@ struct ProjectInspectorView: View {
                 TextField("Team ID", text: $developmentTeam)
                     .textFieldStyle(.roundedBorder)
                     .help("10-character Apple Developer Team ID")
-                TextField("Bundle ID override", text: $bundleIdentifierOverride)
+                TextField("Bundle ID", text: $bundleIdentifierOverride)
                     .textFieldStyle(.roundedBorder)
                     .help("Optional PRODUCT_BUNDLE_IDENTIFIER for Build & Run")
             } header: {
@@ -2840,9 +3727,114 @@ struct ProjectInspectorView: View {
         } message: {
             Text(xcodeAlertMessage)
         }
-        .onAppear { loadAppIdentity() }
-        .onChange(of: selectedProjectPath) { _, _ in
+        .onAppear {
             loadAppIdentity()
+            refreshResolvedBundleIdentifier()
+        }
+        .onChange(of: selectedProjectPath) { _, _ in
+            pendingAppIcon = nil
+            appIconStatus = nil
+            resolvedBundleIdentifier = ""
+            assistantHintNotice = nil
+            loadAppIdentity()
+            refreshResolvedBundleIdentifier()
+        }
+        .onChange(of: chatViewModel.pendingInspectorHints) { _, hints in
+            guard let hints else { return }
+            mergeAssistantInspectorHints(hints)
+            chatViewModel.clearPendingInspectorHints()
+        }
+    }
+
+    private func mergeAssistantInspectorHints(_ hints: AssistantInspectorHints) {
+        if let t = hints.developmentTeam?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+            developmentTeam = t
+        }
+        if let b = hints.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines), !b.isEmpty {
+            bundleIdentifierOverride = b
+        }
+        if let p = hints.productName?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            identityProductName = p
+        }
+        if let d = hints.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+            identityDisplayName = d
+        }
+        if let v = hints.marketingVersion?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
+            identityMarketingVersion = v
+        }
+        if let n = hints.buildNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty {
+            identityBuildNumber = n
+        }
+        assistantHintNotice =
+            "Values were filled from the latest assistant reply. Use “Apply to Xcode project” once the .xcodeproj is readable."
+    }
+
+    private var projectRootURL: URL? {
+        let p = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return p.isEmpty ? nil : URL(fileURLWithPath: p)
+    }
+
+    private func sidebarAppMarkImage() -> NSImage {
+        if let pendingAppIcon { return pendingAppIcon }
+        let p = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else {
+            return NSImage(named: NSImage.folderName) ?? NSImage()
+        }
+        let url = URL(fileURLWithPath: p)
+        if let catalog = ProjectFolderIcon.firstProjectAppIcon(in: url) {
+            return catalog
+        }
+        return ProjectFolderIcon.nsImage(forProjectFolder: p)
+    }
+
+    private func refreshResolvedBundleIdentifier() {
+        guard let root = projectRootURL else {
+            resolvedBundleIdentifier = ""
+            bundleIdentifierLoading = false
+            return
+        }
+        bundleIdentifierLoading = true
+        Task {
+            do {
+                let id = try await ProjectAppIdentityEditor.resolvedBundleIdentifier(projectRoot: root)
+                await MainActor.run {
+                    resolvedBundleIdentifier = id ?? ""
+                    bundleIdentifierLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    resolvedBundleIdentifier = ""
+                    bundleIdentifierLoading = false
+                }
+            }
+        }
+    }
+
+    private func pickInspectorAppIcon() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType.image]
+        panel.message = "Choose a PNG or JPEG for the app icon."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let img = NSImage(contentsOf: url) {
+            pendingAppIcon = img
+            appIconStatus = nil
+        }
+    }
+
+    private func applyInspectorAppIcon() async {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, let image = pendingAppIcon else { return }
+        appIconBusy = true
+        appIconStatus = nil
+        defer { appIconBusy = false }
+        do {
+            try ProjectAppIconWriter.write(image: image, projectRoot: URL(fileURLWithPath: path))
+            pendingAppIcon = nil
+            appIconStatus = "Icon updated. Reopen the project in Xcode if it was open."
+        } catch {
+            appIconStatus = error.localizedDescription
         }
     }
 
