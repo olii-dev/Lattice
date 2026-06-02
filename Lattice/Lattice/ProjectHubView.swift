@@ -276,7 +276,7 @@ private struct HubHeroColumn<Mark: View>: View {
             HStack(alignment: .top, spacing: 18) {
                 welcomeMark
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Welcome")
+                    Text("Build")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .textCase(.uppercase)
@@ -284,7 +284,7 @@ private struct HubHeroColumn<Mark: View>: View {
                     Text("Lattice")
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)
-                    Text("Open an Xcode project folder, or spin up a new app from a template. Chat and local Build & Run stay on your machine.")
+                    Text("Describe an app, scaffold a native project, and iterate all the way through local build and preview. Chat and Build & Run stay on your machine.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -296,14 +296,14 @@ private struct HubHeroColumn<Mark: View>: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Button(action: onNewProject) {
-                    Label("Create New App", systemImage: "plus.app")
+                    Label("Build New App", systemImage: "plus.app")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(HubPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
 
                 Button(action: onOpenFolder) {
-                    Label("Import an App", systemImage: "square.and.arrow.down")
+                    Label("Import Existing App", systemImage: "square.and.arrow.down")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(HubSecondaryButtonStyle(colorScheme: colorScheme))
@@ -317,7 +317,7 @@ private struct HubHeroColumn<Mark: View>: View {
                     .foregroundStyle(.tertiary)
                     .frame(width: 18, alignment: .center)
                     .padding(.top, 2)
-                Text("On your first message in each project, Lattice checks Xcode, simulators, and related tools so fixes stay grounded in your setup.")
+                Text("Start with what you want to build. Lattice will inspect the project, shape the native app flow, edit files, build locally, and keep iterating against your setup.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
