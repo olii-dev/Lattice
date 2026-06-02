@@ -64,6 +64,10 @@ enum APIErrorFormatting {
         switch code {
         case "1305":
             return "The provider’s service is temporarily overloaded. Wait a moment and try again."
+        case "1214":
+            return "The provider rejected the request payload. Retry should rebuild it; if this repeats, switch model or provider."
+        case "1234":
+            return "The provider hit a temporary internal network failure. Retry should usually recover."
         case "429":
             return "Rate limited. Wait briefly or try again later."
         case "401", "403":

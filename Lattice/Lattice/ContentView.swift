@@ -386,11 +386,11 @@ final class ChatViewModel: ObservableObject {
     /// Matches `selectedProjectPath` from the main window (trimmed); drives per-project persistence.
     private var scopedProjectPath: String = ""
     private var compactionRunForThisAgentBurst = false
-    /// Auto-compaction when estimated API history + system/tools approaches context budget (less aggressive than before).
-    private let compactionFillThreshold = 0.92
-    private let compactionMinHistoryMessages = 10
-    /// Keep this many recent API messages verbatim; summarize only older messages.
-    private let compactionVerbatimTailMessages = 8
+    /// Local-only compaction when estimated API history + system/tools is truly near the limit.
+    private let compactionFillThreshold = 0.98
+    private let compactionMinHistoryMessages = 14
+    /// Keep this many recent API messages verbatim when trimming older history.
+    private let compactionVerbatimTailMessages = 12
     /// Coalesces scroll/layout pulses while SSE text arrives (was one per token).
     private var lastTranscriptScrollPulse: Date = .distantPast
     private let transcriptScrollMinInterval: TimeInterval = 0.09
@@ -582,7 +582,7 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    private func maybeAutoCompactHistory(apiKey: String, context: ChatContext) async {
+    private func maybeAutoCompactHistory(apiKey _: String, context: ChatContext) async {
         guard !compactionRunForThisAgentBurst else { return }
         let budget = LatticeContextLimits.inputTokenBudget(modelId: context.model, providerRaw: context.provider)
         let hist = LatticeContextEstimator.approximateChatHistoryTokens(for: conversationHistory)
@@ -592,71 +592,21 @@ final class ChatViewModel: ObservableObject {
         guard fill >= compactionFillThreshold else { return }
         guard conversationHistory.count > compactionMinHistoryMessages else { return }
         guard conversationHistory.count > compactionVerbatimTailMessages + 4 else { return }
-
-        let tail = Array(conversationHistory.suffix(compactionVerbatimTailMessages))
-        let head = Array(conversationHistory.dropLast(compactionVerbatimTailMessages))
-        guard !head.isEmpty else { return }
-
         compactionRunForThisAgentBurst = true
 
-        let digest = Self.jsonHistoryDigest(head, maxUTF16: 72_000)
-        let prompt = """
-        You are summarizing ONLY the EARLY portion of a Lattice coding-agent API message log. The RECENT messages are preserved separately; your output replaces only this older prefix.
+        var trimmed = conversationHistory
+        let targetBudget = Int(Double(budget) * 0.90)
+        while trimmed.count > compactionVerbatimTailMessages + 2 {
+            let current = LatticeContextEstimator.approximateChatHistoryTokens(for: trimmed) + inst.system + inst.tools
+            if current <= targetBudget { break }
+            trimmed.removeFirst()
+        }
 
-        Output plain prose only. No markdown. Under 3500 words.
-
-        Use exactly these section headings in order (each on its own line), then content under each:
-        SECTION USER GOALS:
-        SECTION FILES AND PATHS:
-        SECTION COMMANDS AND BUILD OUTPUT:
-        SECTION ERRORS VERBATIM:
-        SECTION OPEN ISSUES AND NEXT STEPS:
-
-        Under SECTION ERRORS VERBATIM, quote Xcode, simulator, or tool errors exactly when available.
-
-        Older JSON chat log (prefix only):
-        \(digest)
-        """
-
-        do {
-            let summary = try await service.complete(
-                prompt: prompt,
-                apiKey: apiKey,
-                model: context.model,
-                provider: LLMProvider(rawValue: context.provider) ?? .anthropic,
-                zaiUseCodingEndpoint: context.zaiUseCodingEndpoint,
-                maxOutputTokens: 4096
-            )
-            let stamp = ISO8601DateFormatter().string(from: Date())
-            let wrapped = """
-            [Lattice automatic session compaction at \(stamp)]
-            The following summarizes EARLIER API turns only. Recent messages after this block are kept verbatim for the model.
-
-            \(summary)
-            """
-            conversationHistory = [["role": "user", "content": wrapped]] + tail
-            items.append(ChatItem(kind: .assistant(
-                "Lattice summarized older context so recent messages stay verbatim in the model; your transcript above is unchanged except for this note.",
-                isStreaming: false
-            )))
+        if trimmed.count < conversationHistory.count {
+            conversationHistory = trimmed
             pendingRetry = nil
-            requestTranscriptScrollToBottom(immediate: true)
-            persistSession()
-        } catch {
-            Self.removeOldestHistoryMessages(&conversationHistory, keepLast: max(6, conversationHistory.count / 2))
             persistSession()
         }
-    }
-
-    private static func jsonHistoryDigest(_ history: [[String: Any]], maxUTF16: Int) -> String {
-        guard JSONSerialization.isValidJSONObject(history),
-              let data = try? JSONSerialization.data(withJSONObject: history, options: [.prettyPrinted]),
-              let s = String(data: data, encoding: .utf8)
-        else { return "" }
-        if s.count > maxUTF16 {
-            return "...(truncated head)\n\n" + String(s.suffix(maxUTF16))
-        }
-        return s
     }
 
     private static func removeOldestHistoryMessages(_ history: inout [[String: Any]], keepLast: Int) {
@@ -778,7 +728,6 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                     retryDelay = min(retryDelay * 2, 8_000_000_000)
                     guard !Task.isCancelled else { return }
                 }
-
                 let workingItem = ChatItem(kind: .working)
                 items.append(workingItem)
                 let workingId = workingItem.id
@@ -953,7 +902,6 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                 } else {
                     writeUndo = nil
                 }
-
                 let (output, isError) = await executor.execute(name: toolName, input: input)
                 if toolName == "write_file", let u = writeUndo, !isError {
                     burstFileUndos.append(u)
@@ -1190,6 +1138,7 @@ struct ContentView: View {
     @AppStorage("latticeGlobalDevelopmentTeam") private var latticeGlobalDevelopmentTeam = ""
     @AppStorage("latticeBundleIdentifierOverride") private var latticeBundleIdentifierOverride = ""
     @State private var input = ""
+    @State private var composerHeight: CGFloat = 42
     @State private var showProjectPanel = false
     @State private var showProjectHub = false
     @State private var isDirectRunInProgress = false
@@ -1206,7 +1155,7 @@ struct ContentView: View {
     private let composerTips = [
         "Shift+Return for newline",
         "Return sends the message",
-        "Build & Run uses local xcodebuild (no chat)",
+        "Ask for screens, flows, polish, and native structure",
     ]
 
     @State private var showConsoleSheet = false
@@ -1943,11 +1892,11 @@ struct ContentView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(.tertiary)
                 .symbolRenderingMode(.hierarchical)
-            Text("No messages in this project yet")
+            Text("No build requests yet")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Text("Type below to talk to Lattice. If you expected history here, confirm the correct folder is selected in the toolbar or Project sidebar.")
+            Text("Describe the app, screen, or improvement you want to build. If you expected history here, confirm the correct folder is selected in the toolbar or Project sidebar.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -1963,7 +1912,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: 1).id("transcriptTop")
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if viewModel.items.isEmpty {
                             transcriptEmptyPlaceholder
                         }
@@ -1978,7 +1927,7 @@ struct ContentView: View {
                                     .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
                                     .frame(maxWidth: .infinity, alignment: .trailing)
                                 case .working(let item):
-                                    TransientWorkingRow(item: item, reduceMotion: reduceMotion)
+                                    TransientWorkingRow(item: item)
                                         .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 case .assistantTurn(_, let items):
@@ -1994,6 +1943,7 @@ struct ContentView: View {
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
+                            .id(row.id)
                         }
                     }
                     Color.clear.frame(height: 1).id("transcriptBottom")
@@ -2003,22 +1953,22 @@ struct ContentView: View {
             }
             .background(.thinMaterial.opacity(0.45))
             .onChange(of: viewModel.transcriptScrollToBottomToken) { _, _ in
-                // Do not force-scroll while generating: let users inspect earlier messages.
-                if viewModel.isRunning { return }
-                var tx = Transaction()
-                tx.disablesAnimations = true
-                withTransaction(tx) {
-                    proxy.scrollTo("transcriptBottom", anchor: .bottom)
-                }
+                scrollTranscriptToBottom(using: proxy)
             }
             .onChange(of: sidebarLayoutScrollToken) { _, _ in
-                var tx = Transaction()
-                tx.disablesAnimations = true
-                withTransaction(tx) {
-                    proxy.scrollTo("transcriptBottom", anchor: .bottom)
-                }
+                scrollTranscriptToBottom(using: proxy)
             }
             .textSelection(.disabled)
+        }
+    }
+
+    private func scrollTranscriptToBottom(using proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                proxy.scrollTo("transcriptBottom", anchor: .bottom)
+            }
         }
     }
 
@@ -2027,21 +1977,26 @@ struct ContentView: View {
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 0) {
-                TextField("Message…", text: $input, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .padding(.leading, 12)
-                    .padding(.trailing, 6)
-                    .padding(.vertical, 10)
-                    .frame(minHeight: 42, alignment: .center)
-                    .onKeyPress(.return, phases: .down) { keyPress in
-                        if keyPress.modifiers.contains(.shift) {
-                            input += "\n"
-                            return .handled
-                        }
-                        sendMessage()
-                        return .handled
+                ZStack(alignment: .topLeading) {
+                    if input.isEmpty {
+                        Text("Describe the app or feature to build…")
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 12)
+                            .padding(.top, 11)
+                            .allowsHitTesting(false)
                     }
+
+                    LatticeComposerTextView(
+                        text: $input,
+                        measuredHeight: $composerHeight,
+                        onSubmit: sendMessage
+                    )
+                    .frame(height: min(max(composerHeight, 42), 160))
+                    .padding(.leading, 8)
+                    .padding(.trailing, 6)
+                    .padding(.vertical, 2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button(action: {
                     if hasInputText {
@@ -2077,7 +2032,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
-                .help(viewModel.isRunning && !hasInputText ? "Stop" : "Send")
+                .help(viewModel.isRunning && !hasInputText ? "Stop Build" : "Build With Lattice")
                 .padding(.trailing, 6)
                 .padding(.vertical, 2)
             }
@@ -2278,7 +2233,6 @@ struct ContentView: View {
                 rows.append(.user(items[i]))
                 i += 1
             case .working:
-                rows.append(.working(items[i]))
                 i += 1
             case .assistant, .tool, .reasoning:
                 let anchorId = items[i].id
@@ -2355,6 +2309,148 @@ private func normalizeAssistantText(_ raw: String) -> String {
 /// While tokens stream in, skip heavy markdown cleanup (regex over the full buffer every chunk).
 private func assistantStreamDisplayText(_ raw: String) -> String {
     raw.replacingOccurrences(of: "\r\n", with: "\n")
+}
+
+private func copyTextToPasteboard(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+}
+
+private struct MessageCopyButton: View {
+    let text: String
+    var trailing: Bool = false
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            copyTextToPasteboard(text)
+            copied = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                copied = false
+            }
+        } label: {
+            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule()
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
+    }
+}
+
+private struct LatticeComposerTextView: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var measuredHeight: CGFloat
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, measuredHeight: $measuredHeight)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+
+        let textView = ComposerNSTextView()
+        textView.delegate = context.coordinator
+        textView.onSubmit = onSubmit
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textView.textColor = .labelColor
+        textView.textContainerInset = NSSize(width: 0, height: 8)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = true
+        textView.string = text
+
+        scrollView.documentView = textView
+
+        DispatchQueue.main.async {
+            context.coordinator.updateHeight(from: textView)
+        }
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? ComposerNSTextView else { return }
+        textView.onSubmit = onSubmit
+        if textView.string != text {
+            textView.string = text
+        }
+        context.coordinator.updateHeight(from: textView)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding private var text: String
+        @Binding private var measuredHeight: CGFloat
+
+        init(text: Binding<String>, measuredHeight: Binding<CGFloat>) {
+            _text = text
+            _measuredHeight = measuredHeight
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? ComposerNSTextView else { return }
+            let updated = textView.string
+            if text != updated {
+                text = updated
+            }
+            updateHeight(from: textView)
+        }
+
+        func updateHeight(from textView: ComposerNSTextView) {
+            let next = textView.fittingHeight
+            if abs(measuredHeight - next) > 0.5 {
+                measuredHeight = next
+            }
+        }
+    }
+}
+
+private final class ComposerNSTextView: NSTextView {
+    var onSubmit: (() -> Void)?
+
+    var fittingHeight: CGFloat {
+        guard let textContainer, let layoutManager else { return 42 }
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let contentHeight = ceil(usedRect.height + (textContainerInset.height * 2))
+        return max(42, contentHeight)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let isReturnKey = event.keyCode == 36 || event.keyCode == 76
+        if isReturnKey && !event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift) {
+            onSubmit?()
+            return
+        }
+        super.keyDown(with: event)
+    }
 }
 
 private struct MarkdownBlock: View {
@@ -2464,10 +2560,8 @@ private func latticeFriendlyToolSubtitle(name: String, input: String) -> String 
 private struct AssistantProseCard: View {
     let text: String
     let streaming: Bool
-    var reduceMotion: Bool = false
     /// When nested inside `AssistantTurnCard`, outer chrome is handled by the turn container.
     var unifiedTurn: Bool = false
-    @State private var streamPulse = false
 
     private var isErrorText: Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2476,7 +2570,7 @@ private struct AssistantProseCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             if isErrorText {
                 Label("Something went wrong", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.weight(.semibold))
@@ -2484,17 +2578,13 @@ private struct AssistantProseCard: View {
             }
             MarkdownBlock(text: text, isStreaming: streaming)
             if streaming, !text.isEmpty {
-                HStack(spacing: 4) {
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.35))
-                        .frame(width: 22, height: 4)
-                        .opacity(reduceMotion ? 1 : (streamPulse ? 0.35 : 1))
-                        .animation(
-                            reduceMotion ? .default : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
-                            value: streamPulse
-                        )
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Building the response")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
-                .onAppear { streamPulse = true }
             }
         }
         .padding(.horizontal, unifiedTurn ? 2 : 14)
@@ -2534,52 +2624,20 @@ private struct AssistantProseCard: View {
 
 private struct TransientWorkingRow: View {
     let item: ChatItem
-    var reduceMotion: Bool = false
-    @State private var pulse = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Image(systemName: "sparkle")
-                .font(.caption.weight(.semibold))
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.mini)
+            Text("Lattice is working in the background")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-                .background(Color.secondary.opacity(0.14), in: Circle())
-                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: !reduceMotion)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Thinking")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Capsule()
-                    .fill(Color.accentColor.opacity(0.35))
-                    .frame(width: 30, height: 4)
-                    .opacity(reduceMotion ? 1 : (pulse ? 0.35 : 1))
-                    .animation(
-                        reduceMotion ? .default : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
-                        value: pulse
-                    )
-            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.primary.opacity(0.14),
-                            Color.accentColor.opacity(0.22)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.07), radius: 10, y: 3)
+        .background(Color.primary.opacity(0.04), in: Capsule())
         .id(item.id)
-        .onAppear { pulse = true }
     }
 }
 
@@ -2615,15 +2673,9 @@ private struct ReasoningCollapsibleCard: View {
                 }
             } label: {
                 HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .background(Color.secondary.opacity(0.14), in: Circle())
-
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(streaming ? "Thinking" : "Thought")
+                            Text(streaming ? "Live notes" : "Notes")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.primary)
                             if streaming {
@@ -2654,12 +2706,12 @@ private struct ReasoningCollapsibleCard: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(unifiedTurn ? Color.primary.opacity(0.05) : Color.secondary.opacity(0.1))
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(unifiedTurn ? Color.primary.opacity(0.035) : Color.secondary.opacity(0.08))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(unifiedTurn ? 0.10 : 0.2), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(unifiedTurn ? 0.08 : 0.16), lineWidth: 1)
                 )
                 .contentShape(Rectangle())
             }
@@ -2713,16 +2765,16 @@ private struct LatticeToolActivitySection<Content: View>: View {
         Group {
             if unifiedTurn {
                 content()
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 4)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.primary.opacity(0.04))
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.03))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
                     )
             } else {
                 content()
@@ -2762,62 +2814,72 @@ private struct AssistantTurnCard: View {
         return true
     }
 
-    private var hasCollapsibleWork: Bool {
-        for piece in pieces {
-            switch piece {
+    private var hasWorkDetails: Bool {
+        pieces.contains {
+            switch $0 {
             case .reasoning(let item):
-                if case .reasoning(let text, _) = item.kind,
-                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return true
+                if case .reasoning(let text, _) = item.kind {
+                    return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 }
+                return false
             case .tools(let run):
-                if !run.isEmpty { return true }
-            default:
-                break
+                return !run.isEmpty
+            case .assistant:
+                return false
             }
         }
-        return false
     }
 
     private var reasoningPieceCount: Int {
-        pieces.reduce(into: 0) { n, piece in
+        pieces.reduce(into: 0) { count, piece in
             if case .reasoning(let item) = piece,
                case .reasoning(let text, _) = item.kind,
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                n += 1
+                count += 1
             }
         }
     }
 
     private var toolStepCount: Int {
-        pieces.reduce(into: 0) { n, piece in
-            if case .tools(let run) = piece { n += run.count }
+        pieces.reduce(into: 0) { count, piece in
+            if case .tools(let run) = piece { count += run.count }
         }
     }
 
     private var collapsedWorkSummary: String {
-        let r = reasoningPieceCount
-        let t = toolStepCount
-        switch (r > 0, t > 0) {
+        let reasoningCount = reasoningPieceCount
+        let toolCount = toolStepCount
+        if !isTurnComplete {
+            switch (reasoningCount > 0, toolCount > 0) {
+            case (true, true):
+                return toolCount == 1 ? "Working · 1 tool" : "Working · \(toolCount) tools"
+            case (true, false):
+                return "Working"
+            case (false, true):
+                return toolCount == 1 ? "Using 1 tool" : "Using \(toolCount) tools"
+            default:
+                return "Working"
+            }
+        }
+        switch (reasoningCount > 0, toolCount > 0) {
         case (true, true):
-            return t == 1 ? "Thought · 1 tool" : "Thought · \(t) tools"
+            return toolCount == 1 ? "View work log · 1 tool" : "View work log · \(toolCount) tools"
         case (true, false):
-            return "Thought"
+            return "View work log"
         case (false, true):
-            return t == 1 ? "1 tool" : "\(t) tools"
+            return toolCount == 1 ? "View work log · 1 tool" : "View work log · \(toolCount) tools"
         default:
-            return "Details"
+            return "View activity"
         }
     }
 
     private var visiblePieces: [AssistantTurnPiece] {
-        guard isTurnComplete, workCollapsed, hasCollapsibleWork else { return pieces }
-        return pieces.filter {
-            switch $0 {
-            case .assistant: return true
-            case .reasoning, .tools: return false
-            }
+        guard workCollapsed else { return pieces }
+        let assistants = pieces.filter {
+            if case .assistant = $0 { return true }
+            return false
         }
+        return assistants
     }
 
     private var showsRetry: Bool {
@@ -2825,18 +2887,31 @@ private struct AssistantTurnCard: View {
         return items.contains { $0.id == pendingRetry.errorItemId }
     }
 
+    private var copyableText: String {
+        let blocks = items.compactMap { item -> String? in
+            if case .assistant(let text, _) = item.kind {
+                let cleaned = normalizeAssistantText(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleaned.isEmpty ? nil : cleaned
+            }
+            return nil
+        }
+        return blocks.joined(separator: "\n\n")
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "sparkle")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 16, alignment: .leading)
-                .padding(.top, 6)
+        VStack(alignment: .leading, spacing: 0) {
+            if isTurnComplete {
+                Text("Lattice")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                    .padding(.bottom, 8)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
-                if hasCollapsibleWork, isTurnComplete {
+                if hasWorkDetails {
                     workDisclosureRow
-                        .padding(.bottom, workCollapsed ? 6 : 4)
+                        .padding(.bottom, visiblePieces.isEmpty ? 0 : 6)
                 }
 
                 ForEach(Array(visiblePieces.enumerated()), id: \.element.id) { index, piece in
@@ -2856,46 +2931,27 @@ private struct AssistantTurnCard: View {
                     .controlSize(.small)
                     .padding(.top, 8)
                 }
+                if !copyableText.isEmpty {
+                    MessageCopyButton(text: copyableText)
+                        .padding(.top, showsRetry ? 8 : 10)
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.primary.opacity(0.12),
-                                Color.accentColor.opacity(0.18)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(color: .black.opacity(0.09), radius: 14, y: 4)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
         .padding(.horizontal, 0)
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
-            workCollapsed = isTurnComplete
-        }
-        .onChange(of: isTurnComplete) { _, done in
-            if done, hasCollapsibleWork {
-                if reduceMotion {
-                    workCollapsed = true
-                } else {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                        workCollapsed = true
-                    }
-                }
-            } else if !done {
-                workCollapsed = false
-            }
+            workCollapsed = true
         }
     }
 
@@ -2904,7 +2960,7 @@ private struct AssistantTurnCard: View {
             if reduceMotion {
                 workCollapsed.toggle()
             } else {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                withAnimation(.easeInOut(duration: 0.16)) {
                     workCollapsed.toggle()
                 }
             }
@@ -2913,21 +2969,28 @@ private struct AssistantTurnCard: View {
                 Image(systemName: workCollapsed ? "chevron.right" : "chevron.down")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.tertiary)
-                    .frame(width: 14, alignment: .center)
-                Text(workCollapsed ? collapsedWorkSummary : "Hide reasoning & tools")
+                    .frame(width: 10, alignment: .center)
+
+                if !isTurnComplete {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+
+                Text(workCollapsed ? collapsedWorkSummary : "Hide work log")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.17), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
@@ -2943,7 +3006,7 @@ private struct AssistantTurnCard: View {
             }
         case .assistant(let item):
             if case .assistant(let text, let streaming) = item.kind {
-                AssistantProseCard(text: text, streaming: streaming, reduceMotion: reduceMotion, unifiedTurn: true)
+                AssistantProseCard(text: text, streaming: streaming, unifiedTurn: true)
             }
         case .tools(let toolItems):
             LatticeToolActivitySection(unifiedTurn: true) {
@@ -3184,7 +3247,7 @@ struct ChatItemView: View {
         case .reasoning(let text, let isStreaming):
             ReasoningCollapsibleCard(text: text, streaming: isStreaming, reduceMotion: reduceMotion)
         case .working:
-            TransientWorkingRow(item: item, reduceMotion: reduceMotion)
+            TransientWorkingRow(item: item)
         case .assistant(let text, let isStreaming):
             AssistantBubble(text: text, isStreaming: isStreaming, reduceMotion: reduceMotion)
         case .tool(let name, let input, let output, let isError, let isRunning):
@@ -3228,37 +3291,41 @@ struct UserBubble: View {
     }
 
     var body: some View {
-        ShrinkWrappedBubbleTextLayout(maxContentWidth: innerTextMaxWidth) {
-            Text(text)
-                .font(.body)
-                .textSelection(.disabled)
-                .multilineTextAlignment(.leading)
-                .lineSpacing(4)
-                .foregroundStyle(.primary)
+        VStack(alignment: .trailing, spacing: 8) {
+            ShrinkWrappedBubbleTextLayout(maxContentWidth: innerTextMaxWidth) {
+                Text(text)
+                    .font(.body)
+                    .textSelection(.disabled)
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(4)
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.20))
+            )
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.accentColor.opacity(0.45),
+                                Color.primary.opacity(0.12)
+                            ],
+                            startPoint: .topTrailing,
+                            endPoint: .bottomLeading
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.accentColor.opacity(0.08), radius: 10, y: 3)
+            .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
+
+            MessageCopyButton(text: text, trailing: true)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                .fill(Color.accentColor.opacity(0.20))
-        )
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.accentColor.opacity(0.45),
-                            Color.primary.opacity(0.12)
-                        ],
-                        startPoint: .topTrailing,
-                        endPoint: .bottomLeading
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: Color.accentColor.opacity(0.08), radius: 10, y: 3)
-        .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
     }
 }
 

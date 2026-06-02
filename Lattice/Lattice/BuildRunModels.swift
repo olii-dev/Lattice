@@ -14,7 +14,7 @@ struct SimulatorOption: Identifiable, Hashable {
         case watchOS
     }
 
-    /// Classify from the human-readable runtime string produced by `SimulatorStore` (e.g. "iOS 18", "watchOS 11").
+    /// Classify from the human-readable runtime string produced by `SimulatorStore` (e.g. "iOS 26", "watchOS 26").
     func matches(filter: RunPlatformFilter) -> Bool {
         let r = runtime.lowercased()
         switch filter {

@@ -76,14 +76,18 @@ struct LLMService {
         if let e = error as? StreamError, case .apiError(let raw) = e {
             let t = raw.lowercased()
             if t.contains("1305") { return true }
+            if t.contains("1234") { return true }
             if t.contains("overloaded") { return true }
             if t.contains("temporarily overloaded") { return true }
+            if t.contains("internal network failure") { return true }
             if t.contains("rate_limit") || t.contains("rate limit") { return true }
         }
         let d = error.localizedDescription.lowercased()
         return d.contains("1305")
+            || d.contains("1234")
             || d.contains("overloaded")
             || d.contains("temporarily overloaded")
+            || d.contains("internal network failure")
             || d.contains("rate_limit")
             || d.contains("rate limit")
     }
@@ -484,8 +488,11 @@ struct LLMService {
                         }
                     }
 
-                    var assistantMsg: [String: Any] = ["role": "assistant"]
-                    if !text.isEmpty { assistantMsg["content"] = text }
+                    guard !text.isEmpty || !toolCalls.isEmpty else { continue }
+                    var assistantMsg: [String: Any] = [
+                        "role": "assistant",
+                        "content": text
+                    ]
                     if !toolCalls.isEmpty { assistantMsg["tool_calls"] = toolCalls }
                     result.append(assistantMsg)
                 }
@@ -523,15 +530,47 @@ struct LLMService {
         - Never output markdown symbols for formatting, including: *, #, _, `, >, -, or numbered list prefixes.
         - Write short compact paragraphs with minimal whitespace.
         - For apps created from Lattice’s “New project” flow, bundle identifiers follow com.lattice.<lowercased product slug> unless the user or Xcode project already specifies a different bundle ID. Prefer that pattern when you invent or adjust bundle IDs for those projects.
+        - Default to the current Apple OS generation for the active platform unless the user explicitly asks for older compatibility:
+          iPhone/iPad work uses iOS 26, watch work uses watchOS 26, and Mac work uses macOS 26.
+        - If ACTIVE CONTEXT, the selected run target, or the existing project clearly indicates a platform, follow that platform and keep generated code aligned to its OS 26 APIs and conventions.
+        - Do not quietly fall back to older deployment targets like iOS 17/18, watchOS 10/11, or macOS 14/15 unless the user explicitly asks for them.
 
         SWIFTUI AND NATIVE UI (follow Human Interface Guidelines):
         - Prefer standard SwiftUI containers and controls: NavigationStack or NavigationSplitView, Form, List, Section, toolbar items, Menu, Button(role:), Toggle, LabeledContent, GroupBox.
         - Prefer semantic styles over fixed styling: Font.body / title / headline; foregroundStyle(.primary) and .secondary; default padding; reserve explicit point sizes only for icons or tight toolbars.
         - Use SF Symbols with hierarchical or palette rendering where appropriate; avoid custom emoji-styled icons for system actions.
         - Use Color.accentColor and system semantic colors; do not hard-code blues/grays that fight system appearance or Dark Mode.
-        - Use materials (ultraThinMaterial, etc.) sparingly—one layer or Apple-standard patterns—not stacked full-window blur-on-blur.
+        - Use materials (ultraThinMaterial, etc.) sparingly and correctly. Liquid Glass and similar materials belong primarily in controls and navigation chrome, not as a blanket content background or stacked blur-on-blur effect.
         - Support Dynamic Type: avoid clipping text; prefer multiline titles where needed.
-        - When generating new screens, default to unadorned layouts that read as system UI before adding decoration.
+        - Respect Apple layout guidance: clear visual hierarchy, strong alignment, readable spacing, and controls that sit above content instead of competing with it.
+        - Prefer layouts that feel immediately Apple-native before adding any decoration.
+        - Default to building complete native app flows, not isolated demo screens.
+        - When you create a new feature, include the surrounding product structure it needs to feel real: navigation, screen titles, toolbar actions, settings entry points, previews or sample data, and sensible empty/loading/error states.
+        - For iPhone apps, strongly prefer polished Apple-style patterns such as TabView for top-level destinations, NavigationStack for drill-in flows, Forms for settings and data entry, Lists/Sections for structured content, and sheets for focused subflows.
+        - Favor simple, durable app architecture over novelty: stable models, clear state ownership, reusable small views, and local sample content when backend/data work is not yet defined.
+        - First drafts should feel like usable app starts with multiple coherent surfaces, not a single placeholder screen.
+        - Aim for a premium native result, not just a technically working scaffold: strong spacing rhythm, clear hierarchy, calm color usage, good empty states, thoughtful onboarding when relevant, and polished first-run sample content.
+        - Generated apps should feel designed for the App Store, with coherent navigation and visually intentional screens rather than placeholder stacks of controls.
+        - Pick a clear visual direction for each app and carry it consistently across screens: typography hierarchy, spacing scale, surface treatment, icon style, and accent usage should feel intentional and related.
+        - Avoid bland scaffolding UI. Do not ship screens that are just default VStack piles, plain forms with no hierarchy, oversized rounded rectangles everywhere, or generic cards repeated without structure.
+        - For dashboards and home screens, create focal areas, grouped sections, strong section hierarchy, and one obvious primary area instead of flat repeated tiles.
+        - Prefer polished native composition over over-styling: excellent layout, hierarchy, spacing, information architecture, and motion matter more than adding extra decoration.
+        - Think in Apple-standard screen anatomy: clear title area, purposeful toolbar actions, strong primary content region, appropriate secondary sections, and breathing room around grouped content.
+        - Use fewer, better surfaces. Avoid filling every screen with cards, outlines, tinted backgrounds, shadows, and capsules at the same time.
+        - Navigation must feel native. Use a small number of stable top-level destinations, clear nouns for tabs, and predictable drill-in flows.
+        - Settings, creation flows, and detail screens should usually feel closer to Apple apps like Settings, Reminders, Notes, Fitness, or Journal than to a generic startup dashboard.
+        - Lists and forms should communicate hierarchy through sectioning, labels, spacing, alignment, and accessories, not through excessive custom decoration.
+        - Use accent color intentionally and sparingly. Important actions, selection state, and a few focal highlights should carry the accent; the whole interface should not be tinted.
+        - Prefer system spacing and grouping that makes scanning easy. Avoid cramped controls, edge-to-edge clutter, and giant empty areas with weak hierarchy.
+        - Use motion and transitions in a restrained native way. Avoid gimmicky animations; prefer subtle state changes, sheets, navigation transitions, and polished progressive disclosure.
+        - When a screen needs emphasis, create it through information hierarchy, spacing, and one premium focal component rather than by styling every element loudly.
+        - Default to an Apple-standard quality bar: if a generated screen would look obviously below the design level of a modern first-party Apple app, refine it before finishing.
+        - Before finalizing any new app or feature UI, self-check:
+          Does the information hierarchy read clearly at a glance?
+          Does the navigation structure feel native and stable?
+          Does the interface use system patterns instead of ad hoc custom widgets?
+          Is the accent/material usage restrained and intentional?
+          Would this look like a credible App Store-ready first draft instead of a prototype?
         """
 
         if let prefix = context.messagePrefix {
