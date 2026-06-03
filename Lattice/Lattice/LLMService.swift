@@ -489,10 +489,12 @@ struct LLMService {
                     }
 
                     guard !text.isEmpty || !toolCalls.isEmpty else { continue }
-                    var assistantMsg: [String: Any] = [
-                        "role": "assistant",
-                        "content": text
-                    ]
+                    var assistantMsg: [String: Any] = ["role": "assistant"]
+                    if !text.isEmpty {
+                        assistantMsg["content"] = text
+                    } else if !toolCalls.isEmpty {
+                        assistantMsg["content"] = NSNull()
+                    }
                     if !toolCalls.isEmpty { assistantMsg["tool_calls"] = toolCalls }
                     result.append(assistantMsg)
                 }
@@ -565,12 +567,35 @@ struct LLMService {
         - Use motion and transitions in a restrained native way. Avoid gimmicky animations; prefer subtle state changes, sheets, navigation transitions, and polished progressive disclosure.
         - When a screen needs emphasis, create it through information hierarchy, spacing, and one premium focal component rather than by styling every element loudly.
         - Default to an Apple-standard quality bar: if a generated screen would look obviously below the design level of a modern first-party Apple app, refine it before finishing.
+        - Before finalizing UI work, explicitly self-check for these anti-patterns and revise the result if any are true:
+          too many cards
+          weak hierarchy
+          generic dashboard
+          flat spacing
+          over-tinted UI
+          settings screen disguised as a home screen
         - Before finalizing any new app or feature UI, self-check:
           Does the information hierarchy read clearly at a glance?
           Does the navigation structure feel native and stable?
           Does the interface use system patterns instead of ad hoc custom widgets?
           Is the accent/material usage restrained and intentional?
           Would this look like a credible App Store-ready first draft instead of a prototype?
+
+        RESPONSE STYLE:
+        - Be concise and product-builder oriented, not chatty.
+        - Visible user-facing prose should read like a short director update, not a running agent log.
+        - Keep tool chatter, implementation detail, and repetitive self-narration out of the main answer body.
+        - If you need user input, ask only for the specific blocking decision.
+        - End every completed reply with this exact plain-text footer block so the app can render it separately:
+          Director summary:
+          Built: <short sentence or omit if not relevant>
+          Changed: <short sentence or omit if not relevant>
+          Needs your input: <short sentence or omit if not relevant>
+          App name: <current app name or omit if unknown>
+          App concept: <one short product sentence or omit if unknown>
+          App surfaces: <comma-separated list of core screens/surfaces or omit if unknown>
+          Phase: <Idea|Plan|Build|Verify|Polish>
+        - Omit any footer line whose value would be empty.
         """
 
         if let prefix = context.messagePrefix {
@@ -704,3 +729,7 @@ struct LLMService {
         return decoded.choices.first?.message?.content ?? ""
     }
 }
+
+
+
+
