@@ -1659,6 +1659,10 @@ struct ContentView: View {
                 recentStore.add(path: trimmed)
             }
             refreshProjectDerivedSettings()
+            applyGeneratedSummaryIconIfPossible()
+        }
+        .onChange(of: viewModel.projectSummary) { _, _ in
+            applyGeneratedSummaryIconIfPossible()
         }
         .onChange(of: latticeLocalRunDestinationRaw) { _, _ in
             if !supportedRunDestinations.contains(localRunDestination) {
@@ -1776,6 +1780,14 @@ struct ContentView: View {
         config.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         config.arguments = args
         try? config.run()
+    }
+
+    private func applyGeneratedSummaryIconIfPossible() {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, let summary = viewModel.projectSummary, !summary.isEmpty else { return }
+        Task { @MainActor in
+            try? ProjectAppIconWriter.writeGenerated(summary: summary, projectRoot: URL(fileURLWithPath: path))
+        }
     }
 
     // MARK: - Context bar
@@ -2377,19 +2389,46 @@ private struct DirectRunBannerCard: View {
             }
 
             if visibleDetailLines.count > 1 {
-                DisclosureGroup(showDetails ? "Hide details" : "View details") {
-                    ScrollView([.vertical, .horizontal]) {
-                        Text(visibleDetailLines.joined(separator: "\n"))
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.primary.opacity(0.92))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            showDetails.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: showDetails ? "chevron.down" : "chevron.right")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 10)
+                            Text(showDetails ? "Hide details" : "View details")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.035))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                        )
                     }
-                    .frame(minHeight: 68, maxHeight: 180)
-                    .padding(.top, 6)
+                    .buttonStyle(.plain)
+
+                    if showDetails {
+                        ScrollView([.vertical, .horizontal]) {
+                            Text(visibleDetailLines.joined(separator: "\n"))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.primary.opacity(0.92))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(minHeight: 68, maxHeight: 180)
+                    }
                 }
-                .font(.caption.weight(.medium))
-                .tint(.secondary)
             }
 
             HStack(spacing: 10) {
@@ -2493,16 +2532,17 @@ private struct MessageCopyButton: View {
             copied = true
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                copied = false
+            copied = false
             }
         } label: {
-            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                .font(.caption.weight(.medium))
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
+                .frame(width: 18, height: 18)
+                .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
+        .help(copied ? "Copied" : "Copy")
         .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
     }
 }
@@ -2518,9 +2558,7 @@ private struct ProjectSummaryStrip: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            ProjectFolderIconView(path: projectPath)
-                .frame(width: 34, height: 34)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            ProjectSummaryBadge(summary: summary, projectPath: projectPath)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(appNameLine)
@@ -2539,6 +2577,36 @@ private struct ProjectSummaryStrip: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.025))
+    }
+}
+
+private struct ProjectSummaryBadge: View {
+    let summary: LatticeProjectSummary
+    let projectPath: String
+
+    private var badgeImage: NSImage? {
+        ProjectAppIconWriter.generatedImage(
+            summary: summary,
+            projectName: (projectPath as NSString).lastPathComponent,
+            size: 68
+        )
+    }
+
+    var body: some View {
+        Group {
+            if let badgeImage {
+                Image(nsImage: badgeImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.secondary.opacity(0.2))
+            }
+        }
+        .frame(width: 34, height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
     }
 }
 
@@ -2903,11 +2971,11 @@ private struct ReasoningCollapsibleCard: View {
                         if text.isEmpty, streaming {
                             Text("…")
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary.opacity(0.92))
                         } else if !previewSnippet.isEmpty {
                             Text(previewSnippet)
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary.opacity(0.92))
                                 .lineLimit(streaming ? 2 : 1)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2918,7 +2986,7 @@ private struct ReasoningCollapsibleCard: View {
 
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary.opacity(0.9))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -2938,7 +3006,7 @@ private struct ReasoningCollapsibleCard: View {
                 if text.isEmpty, streaming {
                     Text("…")
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary.opacity(0.92))
                         .padding(.leading, 4)
                 } else {
                     Text(fullReasoningText)
@@ -3533,7 +3601,7 @@ private struct ToolTimelineStepRow: View {
                             if !displayInput.isEmpty {
                                 Text(displayInput)
                                     .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.secondary.opacity(0.92))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
@@ -3546,7 +3614,7 @@ private struct ToolTimelineStepRow: View {
                         } else if output != nil, !(output?.isEmpty ?? true) {
                             Image(systemName: outputExpanded ? "chevron.up" : "chevron.down")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary.opacity(0.9))
                         }
                     }
                     .padding(.horizontal, 6)
