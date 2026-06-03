@@ -392,11 +392,7 @@ enum SimulatorBuildRunner {
             simUDID = u
             xcodeDestination = "platform=iOS Simulator,id=\(u)"
             sdkFragment = "iphonesimulator"
-            _ = await runProcess(
-                executable: "/usr/bin/xcrun",
-                arguments: ["simctl", "boot", simUDID],
-                directory: nil
-            )
+            await prepareSimulatorForLaunch(simUDID)
         case .iOSDevice:
             guard let u = simulatorUDID, !u.isEmpty else {
                 throw SimulatorBuildRunnerError.processLaunch("Select a connected iPhone/iPad for Build & Run.")
@@ -411,11 +407,7 @@ enum SimulatorBuildRunner {
             simUDID = u
             xcodeDestination = "platform=watchOS Simulator,id=\(u)"
             sdkFragment = "watchsimulator"
-            _ = await runProcess(
-                executable: "/usr/bin/xcrun",
-                arguments: ["simctl", "boot", simUDID],
-                directory: nil
-            )
+            await prepareSimulatorForLaunch(simUDID)
         case .macOS:
             simUDID = ""
             xcodeDestination = "platform=macOS"
@@ -590,6 +582,24 @@ enum SimulatorBuildRunner {
             return bid
         }
         throw SimulatorBuildRunnerError.missingBundleId
+    }
+
+    private static func prepareSimulatorForLaunch(_ simUDID: String) async {
+        _ = await runProcess(
+            executable: "/usr/bin/xcrun",
+            arguments: ["simctl", "boot", simUDID],
+            directory: nil
+        )
+        _ = await runProcess(
+            executable: "/usr/bin/open",
+            arguments: ["-a", "Simulator", "--args", "-CurrentDeviceUDID", simUDID],
+            directory: nil
+        )
+        _ = await runProcess(
+            executable: "/usr/bin/xcrun",
+            arguments: ["simctl", "bootstatus", simUDID, "-b"],
+            directory: nil
+        )
     }
 
     // MARK: - Subprocess (no waitUntilExit — terminationHandler + continuation)

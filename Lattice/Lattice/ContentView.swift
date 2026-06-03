@@ -1382,7 +1382,7 @@ struct ContentView: View {
                 contextBar
                 if let summary = viewModel.projectSummary, !summary.isEmpty, !showProjectHub {
                     Divider()
-                    ProjectSummaryStrip(summary: summary)
+                    ProjectSummaryStrip(summary: summary, projectPath: selectedProjectPath)
                 }
                 Divider()
                 if let banner = directRunBanner {
@@ -1727,96 +1727,55 @@ struct ContentView: View {
     }
 
     private func directRunBannerView(_ text: String) -> some View {
-        let success = !directRunBannerIsError
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.title3)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(success ? Color.green : Color.orange)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(success ? "Build succeeded" : "Build failed")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(success ? "Local Build & Run completed." : "Review the log or send the error to the assistant.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    directRunBanner = nil
-                    directRunBannerIsError = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Dismiss")
-            }
-
-            ScrollView([.vertical, .horizontal]) {
-                Text(text)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 72, maxHeight: 200)
-
-            HStack(spacing: 10) {
-                if directRunBannerIsError {
-                    Button {
-                        sendBuildErrorToChat(text)
-                    } label: {
-                        Label("Let Lattice fix it", systemImage: "wand.and.stars")
-                    }
-                    .controlSize(.regular)
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityLabel("Let Lattice fix it")
-                    .accessibilityHint(activeAPIKey.isEmpty ? "Inserts a fix request into the message field." : "Sends the error to the assistant.")
-                    .help(activeAPIKey.isEmpty ? "Fills the message field (add an API key in Settings to send automatically)." : "Send this error to the assistant as a chat message.")
-                }
-
-                Button {
-                    copyTextAndToast(text, toast: "Copied build output")
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .controlSize(.small)
-                .modifier(BuildBannerCopyButtonStyle())
-
-                Button("Full log") {
-                    consoleStore.append(text, category: "build", projectPath: selectedProjectPath)
-                    consoleSearch = ""
-                    showConsoleSheet = true
-                }
-                .controlSize(.small)
-                .buttonStyle(.bordered)
-
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThinMaterial)
+        DirectRunBannerCard(
+            rawText: text,
+            isError: directRunBannerIsError,
+            destination: localRunDestination,
+            destinationLabel: currentRunTargetLabel,
+            onDismiss: {
+                directRunBanner = nil
+                directRunBannerIsError = false
+            },
+            onFix: {
+                sendBuildErrorToChat(text)
+            },
+            onCopy: {
+                copyTextAndToast(text, toast: directRunBannerIsError ? "Copied build error" : "Copied build details")
+            },
+            onShowFullLog: {
+                consoleStore.append(text, category: "build", projectPath: selectedProjectPath)
+                consoleSearch = ""
+                showConsoleSheet = true
+            },
+            onOpenDestination: {
+                openSelectedRunDestination()
+            },
+            canOpenDestination: localRunDestination == .iOSSimulator || localRunDestination == .watchOSSimulator
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    success ? Color.green.opacity(0.35) : Color.orange.opacity(0.45),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var currentRunTargetLabel: String {
+        switch localRunDestination {
+        case .macOS:
+            return "My Mac"
+        case .iOSDevice:
+            return devicesForToolbar.first(where: { $0.id == selectedSimulatorID })?.name
+                ?? simulatorStore.connectedDevices.first(where: { $0.id == selectedSimulatorID })?.name
+                ?? "Connected device"
+        case .iOSSimulator, .watchOSSimulator:
+            return simulatorStore.simulators.first(where: { $0.id == selectedSimulatorID })?.name ?? "Simulator"
+        }
+    }
+
+    private func openSelectedRunDestination() {
+        guard localRunDestination == .iOSSimulator || localRunDestination == .watchOSSimulator else { return }
+        let args = selectedSimulatorID.isEmpty ? ["-a", "Simulator"] : ["-a", "Simulator", "--args", "-CurrentDeviceUDID", selectedSimulatorID]
+        let config = Process()
+        config.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        config.arguments = args
+        try? config.run()
     }
 
     // MARK: - Context bar
@@ -2330,6 +2289,150 @@ private struct BuildBannerCopyButtonStyle: ViewModifier {
     }
 }
 
+private struct DirectRunBannerCard: View {
+    let rawText: String
+    let isError: Bool
+    let destination: LatticeLocalRunDestination
+    let destinationLabel: String
+    let onDismiss: () -> Void
+    let onFix: () -> Void
+    let onCopy: () -> Void
+    let onShowFullLog: () -> Void
+    let onOpenDestination: () -> Void
+    let canOpenDestination: Bool
+
+    @State private var showDetails = false
+
+    private var lines: [String] {
+        rawText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var headline: String {
+        if isError { return "Build failed" }
+        if lines.first?.lowercased().hasPrefix("launched ") == true {
+            return "Opened in \(destinationLabel)"
+        }
+        return "Build succeeded"
+    }
+
+    private var subtitle: String {
+        if isError {
+            return "Review the error or send it back to Lattice."
+        }
+        switch destination {
+        case .iOSSimulator, .watchOSSimulator:
+            return "The app built and launch was requested for the selected simulator."
+        case .iOSDevice:
+            return "The app built and launch was requested on the connected device."
+        case .macOS:
+            return "The app built and was opened on this Mac."
+        }
+    }
+
+    private var visibleDetailLines: [String] {
+        lines.filter { line in
+            let lower = line.lowercased()
+            return lower != "** build succeeded **"
+                && !lower.hasPrefix("/usr/bin/touch ")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(isError ? Color.orange : Color.green.opacity(0.9))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(headline)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .background(Circle().fill(Color.primary.opacity(0.05)))
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+
+            if let first = visibleDetailLines.first {
+                Text(first)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if visibleDetailLines.count > 1 {
+                DisclosureGroup(showDetails ? "Hide details" : "View details") {
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(visibleDetailLines.joined(separator: "\n"))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.primary.opacity(0.92))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 68, maxHeight: 180)
+                    .padding(.top, 6)
+                }
+                .font(.caption.weight(.medium))
+                .tint(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                if isError {
+                    Button(action: onFix) {
+                        Label("Let Lattice fix it", systemImage: "wand.and.stars")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                } else if canOpenDestination {
+                    Button(action: onOpenDestination) {
+                        Label("Open Simulator", systemImage: "play.rectangle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                }
+
+                Button(action: onCopy) {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .controlSize(.small)
+                .modifier(BuildBannerCopyButtonStyle())
+
+                Button("Full log", action: onShowFullLog)
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(isError ? 0.14 : 0.10), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+    }
+}
+
 private func normalizeAssistantText(_ raw: String) -> String {
     var s = raw
         .replacingOccurrences(of: "\r\n", with: "\n")
@@ -2396,16 +2499,8 @@ private struct MessageCopyButton: View {
             Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule()
-                        .fill(Color.primary.opacity(0.05))
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                )
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
@@ -2414,6 +2509,7 @@ private struct MessageCopyButton: View {
 
 private struct ProjectSummaryStrip: View {
     let summary: LatticeProjectSummary
+    let projectPath: String
 
     private var appNameLine: String {
         let value = summary.appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -2421,8 +2517,12 @@ private struct ProjectSummaryStrip: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 12) {
+            ProjectFolderIconView(path: projectPath)
+                .frame(width: 34, height: 34)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(appNameLine)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -2434,20 +2534,11 @@ private struct ProjectSummaryStrip: View {
                         .lineLimit(2)
                 }
             }
-
             Spacer(minLength: 10)
-
-            if !summary.surfacesLine.isEmpty {
-                Text(summary.surfacesLine)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.trailing)
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.primary.opacity(0.03))
+        .background(Color.primary.opacity(0.025))
     }
 }
 
@@ -2922,7 +3013,9 @@ private struct DirectorOutcomeBlock: View {
         if let changed = metadata.changed?.trimmingCharacters(in: .whitespacesAndNewlines), !changed.isEmpty {
             result.append(("Changed", changed))
         }
-        if let needsInput = metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines), !needsInput.isEmpty {
+        if let needsInput = metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !needsInput.isEmpty,
+           needsInput.lowercased() != "none" {
             result.append(("Needs your input", needsInput))
         }
         return result
@@ -2934,11 +3027,11 @@ private struct DirectorOutcomeBlock: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.0.uppercased())
                         .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .tracking(0.4)
                     Text(row.1)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.88))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -3156,65 +3249,66 @@ private struct AssistantTurnCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            headerRow
-
+        VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
-                if workCollapsed {
-                    if !primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        AssistantProseCard(text: primaryAssistantText, streaming: !isTurnComplete, unifiedTurn: true)
-                    }
-                    if !isTurnComplete {
-                        AssistantWorkingIndicatorRow(phase: livePhase)
-                            .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
-                    }
-                } else {
-                    ForEach(Array(pieces.enumerated()), id: \.element.id) { index, piece in
-                        turnPiece(piece)
-                        if index < pieces.count - 1 {
-                            Divider()
-                                .opacity(0.22)
-                                .padding(.vertical, 5)
+                headerRow
+
+                VStack(alignment: .leading, spacing: 0) {
+                    if workCollapsed {
+                        if !primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            AssistantProseCard(text: primaryAssistantText, streaming: !isTurnComplete, unifiedTurn: true)
+                        }
+                        if !isTurnComplete {
+                            AssistantWorkingIndicatorRow(phase: livePhase)
+                                .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
+                        }
+                    } else {
+                        ForEach(Array(pieces.enumerated()), id: \.element.id) { index, piece in
+                            turnPiece(piece)
+                            if index < pieces.count - 1 {
+                                Divider()
+                                    .opacity(0.22)
+                                    .padding(.vertical, 5)
+                            }
                         }
                     }
-                }
 
-                if isTurnComplete, hasOutcomeFooter, let metadata = latestDirectorMetadata {
-                    DirectorOutcomeBlock(metadata: metadata)
-                        .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
-                }
-                if showsRetry {
-                    Button(action: onRetry) {
-                        Label("Retry this response", systemImage: "arrow.clockwise.circle")
-                            .font(.caption.weight(.semibold))
+                    if isTurnComplete, hasOutcomeFooter, let metadata = latestDirectorMetadata {
+                        DirectorOutcomeBlock(metadata: metadata)
+                            .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .padding(.top, 8)
-                }
-                if hasWorkDetails {
-                    workDisclosureRow
-                        .padding(.top, (isTurnComplete && hasOutcomeFooter) || showsRetry ? 10 : 8)
-                }
-                if !copyableText.isEmpty {
-                    MessageCopyButton(text: copyableText)
-                        .padding(.top, showsRetry ? 8 : 10)
+                    if showsRetry {
+                        Button(action: onRetry) {
+                            Label("Retry this response", systemImage: "arrow.clockwise.circle")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.top, 8)
+                    }
+                    if hasWorkDetails {
+                        workDisclosureRow
+                            .padding(.top, (isTurnComplete && hasOutcomeFooter) || showsRetry ? 10 : 8)
+                    }
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if !copyableText.isEmpty {
+                MessageCopyButton(text: copyableText)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
-        .padding(.horizontal, 0)
         .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             workCollapsed = true
         }
