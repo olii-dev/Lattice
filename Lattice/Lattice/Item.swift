@@ -176,6 +176,10 @@ enum ChatSessionPersistence {
         "latticeSessionConversationHistoryV2.\(fingerprint(for: path))"
     }
 
+    private static func summaryKey(forProjectPath path: String) -> String {
+        "latticeProjectSummaryV1.\(fingerprint(for: path))"
+    }
+
     static func loadItems(projectPath: String) -> [ChatItem] {
         let key = itemsKey(forProjectPath: projectPath)
         if let data = UserDefaults.standard.data(forKey: key),
@@ -227,9 +231,30 @@ enum ChatSessionPersistence {
         UserDefaults.standard.set(data, forKey: historyKey(forProjectPath: projectPath))
     }
 
+    static func loadProjectSummary(projectPath: String) -> LatticeProjectSummary? {
+        let key = summaryKey(forProjectPath: projectPath)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let summary = try? JSONDecoder().decode(LatticeProjectSummary.self, from: data),
+              !summary.isEmpty else {
+            return nil
+        }
+        return summary
+    }
+
+    static func saveProjectSummary(_ summary: LatticeProjectSummary?, projectPath: String) {
+        let key = summaryKey(forProjectPath: projectPath)
+        guard let summary, !summary.isEmpty,
+              let data = try? JSONEncoder().encode(summary) else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
     static func clear(projectPath: String) {
         UserDefaults.standard.removeObject(forKey: itemsKey(forProjectPath: projectPath))
         UserDefaults.standard.removeObject(forKey: historyKey(forProjectPath: projectPath))
+        UserDefaults.standard.removeObject(forKey: summaryKey(forProjectPath: projectPath))
     }
 
     // MARK: - Snapshots (chat history restore)

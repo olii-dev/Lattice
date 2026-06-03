@@ -92,6 +92,7 @@ struct ChatContext: Equatable {
     let buildInfo: BuildInfo?
     let bundleIdentifierOverride: String?
     let developmentTeam: String?
+    let projectSummary: LatticeProjectSummary?
 
     static func == (lhs: ChatContext, rhs: ChatContext) -> Bool {
         lhs.runTarget == rhs.runTarget &&
@@ -103,7 +104,8 @@ struct ChatContext: Equatable {
         lhs.buildInfo?.projectPath == rhs.buildInfo?.projectPath &&
         lhs.buildInfo?.simulatorID == rhs.buildInfo?.simulatorID &&
         lhs.bundleIdentifierOverride == rhs.bundleIdentifierOverride &&
-        lhs.developmentTeam == rhs.developmentTeam
+        lhs.developmentTeam == rhs.developmentTeam &&
+        lhs.projectSummary == rhs.projectSummary
     }
 
     var messagePrefix: String? {
@@ -147,6 +149,22 @@ struct ChatContext: Equatable {
             [Development Team]
             \(team)
             """)
+        }
+        if let projectSummary, !projectSummary.isEmpty {
+            var summarySection = "[Project Product Summary]"
+            if let appName = projectSummary.appName?.trimmingCharacters(in: .whitespacesAndNewlines), !appName.isEmpty {
+                summarySection += "\n- App name: \(appName)"
+            }
+            if let concept = projectSummary.concept?.trimmingCharacters(in: .whitespacesAndNewlines), !concept.isEmpty {
+                summarySection += "\n- App concept: \(concept)"
+            }
+            let surfaces = projectSummary.surfaces
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !surfaces.isEmpty {
+                summarySection += "\n- App surfaces: \(surfaces.joined(separator: ", "))"
+            }
+            sections.append(summarySection)
         }
 
         guard !sections.isEmpty else { return nil }
@@ -370,6 +388,8 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var transcriptScrollToBottomToken: UInt = 0
     /// Parsed from the latest finalized assistant reply (Bundle / Team / version lines).
     @Published private(set) var pendingInspectorHints: AssistantInspectorHints?
+    @Published private(set) var projectSummary: LatticeProjectSummary?
+    @Published private(set) var livePhase: LatticeDirectorPhase?
 
     private let service = LLMService()
     private let executor = ToolExecutor()
@@ -469,7 +489,9 @@ final class ChatViewModel: ObservableObject {
         scopedProjectPath = path
         items = ChatSessionPersistence.loadItems(projectPath: path)
         conversationHistory = ChatSessionPersistence.loadHistory(projectPath: path)
+        projectSummary = ChatSessionPersistence.loadProjectSummary(projectPath: path)
         pendingRetry = nil
+        livePhase = nil
         burstFileUndos.removeAll()
         burstGitStartOID = nil
         burstKeepItemsPrefixCount = items.count
@@ -480,6 +502,7 @@ final class ChatViewModel: ObservableObject {
     func persistSession() {
         ChatSessionPersistence.saveItems(items, projectPath: scopedProjectPath)
         ChatSessionPersistence.saveHistory(conversationHistory, projectPath: scopedProjectPath)
+        ChatSessionPersistence.saveProjectSummary(projectSummary, projectPath: scopedProjectPath)
     }
 
     func clearPendingInspectorHints() {
@@ -563,10 +586,14 @@ final class ChatViewModel: ObservableObject {
         }
         persistSession()
         isRunning = true
+        livePhase = .idea
         requestTranscriptScrollToBottom(immediate: true)
         compactionRunForThisAgentBurst = false
         agentTask = Task {
-            defer { isRunning = false }
+            defer {
+                isRunning = false
+                livePhase = nil
+            }
             await agenticLoop(apiKey: apiKey, context: context)
         }
     }
@@ -576,6 +603,10 @@ final class ChatViewModel: ObservableObject {
             if case .assistant(let text, let streaming) = item.kind, !streaming {
                 if let hints = AssistantProjectFooterParser.parse(fromAssistantMarkdown: text) {
                     pendingInspectorHints = hints
+                }
+                if let metadata = AssistantProjectFooterParser.parseDirectorMetadata(fromAssistantText: text),
+                   let summary = metadata.projectSummary {
+                    projectSummary = projectSummary?.merged(with: summary) ?? summary
                 }
                 return
             }
@@ -630,6 +661,7 @@ final class ChatViewModel: ObservableObject {
         guard !isRunning else { return }
 
         isRunning = true
+        livePhase = .idea
         compactionRunForThisAgentBurst = false
         conversationHistory.append(["role": "user", "content": contextualizedMessage(outbound, context: context)])
         if showUserBubble {
@@ -641,7 +673,10 @@ final class ChatViewModel: ObservableObject {
         }
 
         agentTask = Task {
-            defer { isRunning = false }
+            defer {
+                isRunning = false
+                livePhase = nil
+            }
             await agenticLoop(apiKey: apiKey, context: context)
         }
     }
@@ -666,6 +701,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         agentTask?.cancel()
         agentTask = nil
         isRunning = false
+        livePhase = nil
         pendingRetry = nil
         persistSession()
     }
@@ -674,6 +710,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         items.removeAll()
         conversationHistory.removeAll()
         pendingRetry = nil
+        livePhase = nil
         burstFileUndos.removeAll()
         burstGitStartOID = nil
         let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -684,6 +721,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         ChatSessionPersistence.clear(projectPath: scopedProjectPath)
         LatticeChatRestoreHistory.clear(projectPath: scopedProjectPath)
         chatRestorePointHeaders = []
+        projectSummary = nil
     }
 
     private static func lastUserTextForHistoryRestore(from items: [ChatItem]) -> String {
@@ -761,6 +799,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                         case .reasoningDelta(let delta):
                             let cleaned = delta.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !cleaned.isEmpty else { continue }
+                            livePhase = .plan
                             removeWorkingPlaceholder()
                             if let i = streamingReasoningIdx {
                                 items[i].appendReasoning(delta)
@@ -775,6 +814,9 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                             noteTranscriptScrollIntent()
 
                         case .textDelta(let delta):
+                            if !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                livePhase = .polish
+                            }
                             removeWorkingPlaceholder()
                             if let i = streamingReasoningIdx {
                                 items[i].finalizeReasoning()
@@ -790,6 +832,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                             noteTranscriptScrollIntent()
 
                         case .toolCallAnnounced(let sseIdx, _, let name):
+                            livePhase = .build
                             removeWorkingPlaceholder()
                             if let i = streamingReasoningIdx {
                                 items[i].finalizeReasoning()
@@ -896,6 +939,8 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                       let input = block.parsedInput
                 else { continue }
 
+                livePhase = .build
+
                 let writeUndo: LatticeWriteFileUndo?
                 if toolName == "write_file", let path = input["path"] as? String {
                     writeUndo = LatticeWriteFileUndo.capture(path: path)
@@ -926,6 +971,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                 toolResults.append(toolResultMessage(
                     toolUseId: toolId, content: output, isError: isError
                 ))
+                livePhase = .verify
             }
 
             if !toolResults.isEmpty {
@@ -945,6 +991,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
             )
             reloadChatRestorePointHeaders()
         }
+        persistSession()
     }
 
     private func contextualizedMessage(_ text: String, context: ChatContext) -> String {
@@ -1333,6 +1380,10 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
                 contextBar
+                if let summary = viewModel.projectSummary, !summary.isEmpty, !showProjectHub {
+                    Divider()
+                    ProjectSummaryStrip(summary: summary)
+                }
                 Divider()
                 if let banner = directRunBanner {
                     directRunBannerView(banner)
@@ -1927,12 +1978,13 @@ struct ContentView: View {
                                     .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
                                     .frame(maxWidth: .infinity, alignment: .trailing)
                                 case .working(let item):
-                                    TransientWorkingRow(item: item)
+                                    TransientWorkingRow(item: item, phase: viewModel.livePhase)
                                         .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 case .assistantTurn(_, let items):
                                     AssistantTurnCard(
                                         items: items,
+                                        livePhase: viewModel.livePhase,
                                         reduceMotion: reduceMotion,
                                         pendingRetry: viewModel.pendingRetry,
                                         onRetry: {
@@ -2220,7 +2272,8 @@ struct ContentView: View {
             buildInfo: nil,
             bundleIdentifierOverride: latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? nil : latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines),
-            developmentTeam: resolvedDevelopmentTeam
+            developmentTeam: resolvedDevelopmentTeam,
+            projectSummary: viewModel.projectSummary
         )
     }
 
@@ -2306,6 +2359,16 @@ private func normalizeAssistantText(_ raw: String) -> String {
     return s.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+private struct AssistantVisibleContent {
+    let prose: String
+    let director: AssistantDirectorMetadata?
+}
+
+private func assistantVisibleContent(from raw: String) -> AssistantVisibleContent {
+    let split = AssistantProjectFooterParser.splitDirectorFooter(fromAssistantText: raw)
+    return AssistantVisibleContent(prose: split.body, director: split.metadata)
+}
+
 /// While tokens stream in, skip heavy markdown cleanup (regex over the full buffer every chunk).
 private func assistantStreamDisplayText(_ raw: String) -> String {
     raw.replacingOccurrences(of: "\r\n", with: "\n")
@@ -2346,6 +2409,65 @@ private struct MessageCopyButton: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
+    }
+}
+
+private struct ProjectSummaryStrip: View {
+    let summary: LatticeProjectSummary
+
+    private var appNameLine: String {
+        let value = summary.appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "Untitled app" : value
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appNameLine)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let concept = summary.concept?.trimmingCharacters(in: .whitespacesAndNewlines), !concept.isEmpty {
+                    Text(concept)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 10)
+
+            if !summary.surfacesLine.isEmpty {
+                Text(summary.surfacesLine)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.03))
+    }
+}
+
+private struct DirectorPhaseChip: View {
+    let phase: LatticeDirectorPhase
+
+    var body: some View {
+        Text(phase.title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
     }
 }
 
@@ -2624,12 +2746,16 @@ private struct AssistantProseCard: View {
 
 private struct TransientWorkingRow: View {
     let item: ChatItem
+    var phase: LatticeDirectorPhase?
 
     var body: some View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.mini)
-            Text("Lattice is working in the background")
+            if let phase {
+                DirectorPhaseChip(phase: phase)
+            }
+            Text(phase == .idea ? "Shaping the request" : "Working in the background")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -2785,9 +2911,94 @@ private struct LatticeToolActivitySection<Content: View>: View {
     }
 }
 
+private struct DirectorOutcomeBlock: View {
+    let metadata: AssistantDirectorMetadata
+
+    private var rows: [(String, String)] {
+        var result: [(String, String)] = []
+        if let built = metadata.built?.trimmingCharacters(in: .whitespacesAndNewlines), !built.isEmpty {
+            result.append(("Built", built))
+        }
+        if let changed = metadata.changed?.trimmingCharacters(in: .whitespacesAndNewlines), !changed.isEmpty {
+            result.append(("Changed", changed))
+        }
+        if let needsInput = metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines), !needsInput.isEmpty {
+            result.append(("Needs your input", needsInput))
+        }
+        return result
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.0.uppercased())
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.tertiary)
+                        .tracking(0.4)
+                    Text(row.1)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+private struct AssistantWorkingIndicatorRow: View {
+    let phase: LatticeDirectorPhase?
+
+    private var title: String {
+        switch phase {
+        case .idea: return "Understanding the request"
+        case .plan: return "Planning the build"
+        case .build: return "Editing files and building"
+        case .verify: return "Verifying the result"
+        case .polish: return "Polishing the app"
+        case nil: return "Still working"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.mini)
+            if let phase {
+                DirectorPhaseChip(phase: phase)
+            }
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
 /// One assistant “turn”: prose, reasoning, and tools in one column.
 private struct AssistantTurnCard: View {
     let items: [ChatItem]
+    var livePhase: LatticeDirectorPhase?
     var reduceMotion: Bool = false
     var pendingRetry: PendingRetryState?
     var onRetry: () -> Void
@@ -2852,34 +3063,52 @@ private struct AssistantTurnCard: View {
         if !isTurnComplete {
             switch (reasoningCount > 0, toolCount > 0) {
             case (true, true):
-                return toolCount == 1 ? "Working · 1 tool" : "Working · \(toolCount) tools"
+                return toolCount == 1 ? "View build log · 1 tool" : "View build log · \(toolCount) tools"
             case (true, false):
-                return "Working"
+                return "View build log"
             case (false, true):
-                return toolCount == 1 ? "Using 1 tool" : "Using \(toolCount) tools"
+                return toolCount == 1 ? "View build log · 1 tool" : "View build log · \(toolCount) tools"
             default:
-                return "Working"
+                return "View activity"
             }
         }
         switch (reasoningCount > 0, toolCount > 0) {
         case (true, true):
-            return toolCount == 1 ? "View work log · 1 tool" : "View work log · \(toolCount) tools"
+            return toolCount == 1 ? "View build log · 1 tool" : "View build log · \(toolCount) tools"
         case (true, false):
-            return "View work log"
+            return "View notes"
         case (false, true):
-            return toolCount == 1 ? "View work log · 1 tool" : "View work log · \(toolCount) tools"
+            return toolCount == 1 ? "View build log · 1 tool" : "View build log · \(toolCount) tools"
         default:
             return "View activity"
         }
     }
 
-    private var visiblePieces: [AssistantTurnPiece] {
-        guard workCollapsed else { return pieces }
-        let assistants = pieces.filter {
-            if case .assistant = $0 { return true }
-            return false
+    private var latestAssistantText: String? {
+        for item in items.reversed() {
+            if case .assistant(let text, _) = item.kind {
+                let prose = assistantVisibleContent(from: text).prose.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !prose.isEmpty { return text }
+            }
         }
-        return assistants
+        return nil
+    }
+
+    private var primaryAssistantText: String {
+        guard let latestAssistantText else { return "" }
+        return assistantVisibleContent(from: latestAssistantText).prose
+    }
+
+    private var latestDirectorMetadata: AssistantDirectorMetadata? {
+        guard let latestAssistantText else { return nil }
+        return assistantVisibleContent(from: latestAssistantText).director
+    }
+
+    private var hasOutcomeFooter: Bool {
+        guard let metadata = latestDirectorMetadata else { return false }
+        return metadata.built?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || metadata.changed?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     private var showsRetry: Bool {
@@ -2888,39 +3117,71 @@ private struct AssistantTurnCard: View {
     }
 
     private var copyableText: String {
-        let blocks = items.compactMap { item -> String? in
-            if case .assistant(let text, _) = item.kind {
-                let cleaned = normalizeAssistantText(text).trimmingCharacters(in: .whitespacesAndNewlines)
-                return cleaned.isEmpty ? nil : cleaned
+        if isTurnComplete {
+            var blocks: [String] = []
+            let primary = normalizeAssistantText(primaryAssistantText).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !primary.isEmpty {
+                blocks.append(primary)
             }
-            return nil
+            if let metadata = latestDirectorMetadata {
+                if let built = metadata.built?.trimmingCharacters(in: .whitespacesAndNewlines), !built.isEmpty {
+                    blocks.append("Built: \(built)")
+                }
+                if let changed = metadata.changed?.trimmingCharacters(in: .whitespacesAndNewlines), !changed.isEmpty {
+                    blocks.append("Changed: \(changed)")
+                }
+                if let needsInput = metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines), !needsInput.isEmpty {
+                    blocks.append("Needs your input: \(needsInput)")
+                }
+            }
+            return blocks.joined(separator: "\n\n")
+        }
+        var blocks = items.compactMap { item -> String? in
+            guard case .assistant(let text, _) = item.kind else { return nil }
+            let cleaned = normalizeAssistantText(assistantVisibleContent(from: text).prose).trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        if let metadata = latestDirectorMetadata {
+            if let built = metadata.built?.trimmingCharacters(in: .whitespacesAndNewlines), !built.isEmpty {
+                blocks.append("Built: \(built)")
+            }
+            if let changed = metadata.changed?.trimmingCharacters(in: .whitespacesAndNewlines), !changed.isEmpty {
+                blocks.append("Changed: \(changed)")
+            }
+            if let needsInput = metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines), !needsInput.isEmpty {
+                blocks.append("Needs your input: \(needsInput)")
+            }
         }
         return blocks.joined(separator: "\n\n")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isTurnComplete {
-                Text("Lattice")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .textCase(.uppercase)
-                    .padding(.bottom, 8)
-            }
+            headerRow
 
             VStack(alignment: .leading, spacing: 0) {
-                if hasWorkDetails {
-                    workDisclosureRow
-                        .padding(.bottom, visiblePieces.isEmpty ? 0 : 6)
+                if workCollapsed {
+                    if !primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        AssistantProseCard(text: primaryAssistantText, streaming: !isTurnComplete, unifiedTurn: true)
+                    }
+                    if !isTurnComplete {
+                        AssistantWorkingIndicatorRow(phase: livePhase)
+                            .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
+                    }
+                } else {
+                    ForEach(Array(pieces.enumerated()), id: \.element.id) { index, piece in
+                        turnPiece(piece)
+                        if index < pieces.count - 1 {
+                            Divider()
+                                .opacity(0.22)
+                                .padding(.vertical, 5)
+                        }
+                    }
                 }
 
-                ForEach(Array(visiblePieces.enumerated()), id: \.element.id) { index, piece in
-                    turnPiece(piece)
-                    if index < visiblePieces.count - 1 {
-                        Divider()
-                            .opacity(0.22)
-                            .padding(.vertical, 5)
-                    }
+                if isTurnComplete, hasOutcomeFooter, let metadata = latestDirectorMetadata {
+                    DirectorOutcomeBlock(metadata: metadata)
+                        .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
                 }
                 if showsRetry {
                     Button(action: onRetry) {
@@ -2930,6 +3191,10 @@ private struct AssistantTurnCard: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .padding(.top, 8)
+                }
+                if hasWorkDetails {
+                    workDisclosureRow
+                        .padding(.top, (isTurnComplete && hasOutcomeFooter) || showsRetry ? 10 : 8)
                 }
                 if !copyableText.isEmpty {
                     MessageCopyButton(text: copyableText)
@@ -2955,6 +3220,22 @@ private struct AssistantTurnCard: View {
         }
     }
 
+    @ViewBuilder
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if isTurnComplete {
+                Text("Lattice")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+            } else if let livePhase {
+                DirectorPhaseChip(phase: livePhase)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 8)
+    }
+
     private var workDisclosureRow: some View {
         Button {
             if reduceMotion {
@@ -2976,7 +3257,7 @@ private struct AssistantTurnCard: View {
                         .controlSize(.mini)
                 }
 
-                Text(workCollapsed ? collapsedWorkSummary : "Hide work log")
+                Text(workCollapsed ? collapsedWorkSummary : "Hide build log")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -3006,7 +3287,7 @@ private struct AssistantTurnCard: View {
             }
         case .assistant(let item):
             if case .assistant(let text, let streaming) = item.kind {
-                AssistantProseCard(text: text, streaming: streaming, unifiedTurn: true)
+                AssistantProseCard(text: assistantVisibleContent(from: text).prose, streaming: streaming, unifiedTurn: true)
             }
         case .tools(let toolItems):
             LatticeToolActivitySection(unifiedTurn: true) {
