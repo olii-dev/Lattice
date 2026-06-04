@@ -1,0 +1,603 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		F87AA4AC2F9EEE6F00FDAFCB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F87AA4942F9EEE6D00FDAFCB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F87AA49B2F9EEE6D00FDAFCB;
+			remoteInfo = Lattice;
+		};
+		F87AA4B62F9EEE6F00FDAFCB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F87AA4942F9EEE6D00FDAFCB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F87AA49B2F9EEE6D00FDAFCB;
+			remoteInfo = Lattice;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F87AA49C2F9EEE6D00FDAFCB /* Lattice.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lattice.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F87AA4AB2F9EEE6F00FDAFCB /* LatticeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LatticeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F87AA4B52F9EEE6F00FDAFCB /* LatticeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LatticeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F8C840972FA035EE00AFD9D2 /* Exceptions for "Lattice" folder in "Lattice" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F87AA49B2F9EEE6D00FDAFCB /* Lattice */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		F87AA49E2F9EEE6D00FDAFCB /* Lattice */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F8C840972FA035EE00AFD9D2 /* Exceptions for "Lattice" folder in "Lattice" target */,
+			);
+			path = Lattice;
+			sourceTree = "<group>";
+		};
+		F87AA4AE2F9EEE6F00FDAFCB /* LatticeTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LatticeTests;
+			sourceTree = "<group>";
+		};
+		F87AA4B82F9EEE6F00FDAFCB /* LatticeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LatticeUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F87AA4992F9EEE6D00FDAFCB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4A82F9EEE6F00FDAFCB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4B22F9EEE6F00FDAFCB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F87AA4932F9EEE6D00FDAFCB = {
+			isa = PBXGroup;
+			children = (
+				F87AA49E2F9EEE6D00FDAFCB /* Lattice */,
+				F87AA4AE2F9EEE6F00FDAFCB /* LatticeTests */,
+				F87AA4B82F9EEE6F00FDAFCB /* LatticeUITests */,
+				F87AA49D2F9EEE6D00FDAFCB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F87AA49D2F9EEE6D00FDAFCB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F87AA49C2F9EEE6D00FDAFCB /* Lattice.app */,
+				F87AA4AB2F9EEE6F00FDAFCB /* LatticeTests.xctest */,
+				F87AA4B52F9EEE6F00FDAFCB /* LatticeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F87AA49B2F9EEE6D00FDAFCB /* Lattice */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F87AA4BF2F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "Lattice" */;
+			buildPhases = (
+				F87AA4982F9EEE6D00FDAFCB /* Sources */,
+				F87AA4992F9EEE6D00FDAFCB /* Frameworks */,
+				F87AA49A2F9EEE6D00FDAFCB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F87AA49E2F9EEE6D00FDAFCB /* Lattice */,
+			);
+			name = Lattice;
+			packageProductDependencies = (
+			);
+			productName = Lattice;
+			productReference = F87AA49C2F9EEE6D00FDAFCB /* Lattice.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F87AA4AA2F9EEE6F00FDAFCB /* LatticeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F87AA4C22F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "LatticeTests" */;
+			buildPhases = (
+				F87AA4A72F9EEE6F00FDAFCB /* Sources */,
+				F87AA4A82F9EEE6F00FDAFCB /* Frameworks */,
+				F87AA4A92F9EEE6F00FDAFCB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F87AA4AD2F9EEE6F00FDAFCB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F87AA4AE2F9EEE6F00FDAFCB /* LatticeTests */,
+			);
+			name = LatticeTests;
+			packageProductDependencies = (
+			);
+			productName = LatticeTests;
+			productReference = F87AA4AB2F9EEE6F00FDAFCB /* LatticeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		F87AA4B42F9EEE6F00FDAFCB /* LatticeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F87AA4C52F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "LatticeUITests" */;
+			buildPhases = (
+				F87AA4B12F9EEE6F00FDAFCB /* Sources */,
+				F87AA4B22F9EEE6F00FDAFCB /* Frameworks */,
+				F87AA4B32F9EEE6F00FDAFCB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F87AA4B72F9EEE6F00FDAFCB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F87AA4B82F9EEE6F00FDAFCB /* LatticeUITests */,
+			);
+			name = LatticeUITests;
+			packageProductDependencies = (
+			);
+			productName = LatticeUITests;
+			productReference = F87AA4B52F9EEE6F00FDAFCB /* LatticeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F87AA4942F9EEE6D00FDAFCB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2610;
+				TargetAttributes = {
+					F87AA49B2F9EEE6D00FDAFCB = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					F87AA4AA2F9EEE6F00FDAFCB = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = F87AA49B2F9EEE6D00FDAFCB;
+					};
+					F87AA4B42F9EEE6F00FDAFCB = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = F87AA49B2F9EEE6D00FDAFCB;
+					};
+				};
+			};
+			buildConfigurationList = F87AA4972F9EEE6D00FDAFCB /* Build configuration list for PBXProject "Lattice" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = F87AA4932F9EEE6D00FDAFCB;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F87AA49D2F9EEE6D00FDAFCB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F87AA49B2F9EEE6D00FDAFCB /* Lattice */,
+				F87AA4AA2F9EEE6F00FDAFCB /* LatticeTests */,
+				F87AA4B42F9EEE6F00FDAFCB /* LatticeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F87AA49A2F9EEE6D00FDAFCB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4A92F9EEE6F00FDAFCB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4B32F9EEE6F00FDAFCB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F87AA4982F9EEE6D00FDAFCB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4A72F9EEE6F00FDAFCB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F87AA4B12F9EEE6F00FDAFCB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F87AA4AD2F9EEE6F00FDAFCB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F87AA49B2F9EEE6D00FDAFCB /* Lattice */;
+			targetProxy = F87AA4AC2F9EEE6F00FDAFCB /* PBXContainerItemProxy */;
+		};
+		F87AA4B72F9EEE6F00FDAFCB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F87AA49B2F9EEE6D00FDAFCB /* Lattice */;
+			targetProxy = F87AA4B62F9EEE6F00FDAFCB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		F87AA4BD2F9EEE6F00FDAFCB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F87AA4BE2F9EEE6F00FDAFCB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		F87AA4C02F9EEE6F00FDAFCB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = ZVYZ759YYL;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Lattice/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Lattice;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.2.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F87AA4C12F9EEE6F00FDAFCB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = ZVYZ759YYL;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Lattice/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Lattice;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.2.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		F87AA4C32F9EEE6F00FDAFCB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lattice.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Lattice";
+			};
+			name = Debug;
+		};
+		F87AA4C42F9EEE6F00FDAFCB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lattice.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Lattice";
+			};
+			name = Release;
+		};
+		F87AA4C62F9EEE6F00FDAFCB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Lattice;
+			};
+			name = Debug;
+		};
+		F87AA4C72F9EEE6F00FDAFCB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lattice.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Lattice;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F87AA4972F9EEE6D00FDAFCB /* Build configuration list for PBXProject "Lattice" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F87AA4BD2F9EEE6F00FDAFCB /* Debug */,
+				F87AA4BE2F9EEE6F00FDAFCB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F87AA4BF2F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "Lattice" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F87AA4C02F9EEE6F00FDAFCB /* Debug */,
+				F87AA4C12F9EEE6F00FDAFCB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F87AA4C22F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "LatticeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F87AA4C32F9EEE6F00FDAFCB /* Debug */,
+				F87AA4C42F9EEE6F00FDAFCB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F87AA4C52F9EEE6F00FDAFCB /* Build configuration list for PBXNativeTarget "LatticeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F87AA4C62F9EEE6F00FDAFCB /* Debug */,
+				F87AA4C72F9EEE6F00FDAFCB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F87AA4942F9EEE6D00FDAFCB /* Project object */;
+}
