@@ -183,7 +183,6 @@ enum SimulatorBuildRunner {
         throw SimulatorBuildRunnerError.noXcodeProject(in: projectRoot.path)
     }
 
-    /// Opens the resolved `.xcworkspace` or `.xcodeproj` in Xcode using the same discovery rules as builds.
     @MainActor
     static func openProjectInXcode(projectRoot: URL) async throws {
         let target = try resolveXcodeTarget(projectRoot: projectRoot)

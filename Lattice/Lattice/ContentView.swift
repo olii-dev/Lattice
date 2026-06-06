@@ -140,7 +140,7 @@ struct ChatContext: Equatable {
 
         if let bid = bundleIdentifierOverride, !bid.isEmpty {
             sections.append("""
-            [Bundle Identifier Override]
+            [Active Bundle Identifier]
             \(bid)
             """)
         }
@@ -163,6 +163,18 @@ struct ChatContext: Equatable {
                 .filter { !$0.isEmpty }
             if !surfaces.isEmpty {
                 summarySection += "\n- App surfaces: \(surfaces.joined(separator: ", "))"
+            }
+            if let navigation = projectSummary.navigation?.trimmingCharacters(in: .whitespacesAndNewlines), !navigation.isEmpty {
+                summarySection += "\n- App navigation: \(navigation)"
+            }
+            if let designDirection = projectSummary.designDirection?.trimmingCharacters(in: .whitespacesAndNewlines), !designDirection.isEmpty {
+                summarySection += "\n- Design direction: \(designDirection)"
+            }
+            let openIssues = (projectSummary.openIssues ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !openIssues.isEmpty {
+                summarySection += "\n- Open issues: \(openIssues.joined(separator: ", "))"
             }
             sections.append(summarySection)
         }
@@ -378,6 +390,7 @@ struct PendingRetryState: Equatable {
     /// `git rev-parse HEAD` at first tool execution in this burst (nil if not a git repo).
     let gitHeadOID: String?
     let gitProjectRoot: String?
+    let resumeFromLastStableStep: Bool
 }
 
 @MainActor
@@ -523,6 +536,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func appendAssistantFailure(_ message: String) {
+        let hadStableProgress = items.count > burstKeepItemsPrefixCount || conversationHistory.count > burstKeepHistoryPrefixCount
         let row = ChatItem(kind: .assistant(message, isStreaming: false))
         items.append(row)
         let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -532,7 +546,8 @@ final class ChatViewModel: ObservableObject {
             keepHistoryPrefixCount: max(0, burstKeepHistoryPrefixCount),
             fileUndos: burstFileUndos,
             gitHeadOID: burstGitStartOID,
-            gitProjectRoot: root.isEmpty ? nil : root
+            gitProjectRoot: root.isEmpty ? nil : root,
+            resumeFromLastStableStep: hadStableProgress
         )
         requestTranscriptScrollToBottom(immediate: true)
     }
@@ -561,6 +576,36 @@ final class ChatViewModel: ObservableObject {
     /// Re-runs the model from the last user message after git + file rollback for that attempt.
     func performRetry(apiKey: String, context: ChatContext) {
         guard let pack = pendingRetry, !isRunning, !apiKey.isEmpty else { return }
+        if pack.resumeFromLastStableStep {
+            items.removeAll { $0.id == pack.errorItemId }
+            pendingRetry = nil
+            burstKeepItemsPrefixCount = items.count
+            burstKeepHistoryPrefixCount = conversationHistory.count
+            burstFileUndos = pack.fileUndos
+            burstGitStartOID = pack.gitHeadOID
+            conversationHistory.append([
+                "role": "user",
+                "content": """
+                [Retry request]
+                The last attempt failed because of a provider or connection issue.
+                Resume from the last completed step using the current workspace state.
+                Do not restart from scratch or repeat already successful work unless it is required.
+                """
+            ])
+            persistSession()
+            isRunning = true
+            livePhase = .build
+            requestTranscriptScrollToBottom(immediate: true)
+            compactionRunForThisAgentBurst = false
+            agentTask = Task {
+                defer {
+                    isRunning = false
+                    livePhase = nil
+                }
+                await agenticLoop(apiKey: apiKey, context: context)
+            }
+            return
+        }
         if let root = pack.gitProjectRoot, let oid = pack.gitHeadOID, !root.isEmpty, !oid.isEmpty {
             LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
         }
@@ -654,6 +699,13 @@ final class ChatViewModel: ObservableObject {
         if showUserBubble {
             pendingRetry = nil
             items.append(ChatItem(kind: .user(text)))
+            if !scopedProjectPath.isEmpty {
+                consoleStore?.beginSession(
+                    title: "Agent pass",
+                    category: "agent",
+                    projectPath: scopedProjectPath
+                )
+            }
         }
 
         let outbound = outboundUserContent(forAPI: text)
@@ -1183,7 +1235,7 @@ struct ContentView: View {
     @AppStorage("latticeAccentTag") private var latticeAccentTag = "system"
     @AppStorage("latticeDevelopmentTeam") private var latticeDevelopmentTeam = ""
     @AppStorage("latticeGlobalDevelopmentTeam") private var latticeGlobalDevelopmentTeam = ""
-    @AppStorage("latticeBundleIdentifierOverride") private var latticeBundleIdentifierOverride = ""
+    @AppStorage("latticeBundleIdentifierOverridesJSON") private var latticeBundleIdentifierOverridesJSON = "{}"
     @State private var input = ""
     @State private var composerHeight: CGFloat = 42
     @State private var showProjectPanel = false
@@ -1198,6 +1250,8 @@ struct ContentView: View {
     @State private var supportedRunDestinations: Set<LatticeLocalRunDestination> = .allRunDestinations
     @State private var discoveredDevelopmentTeams: [String] = []
     @State private var showSigningHelpPopover = false
+    @State private var latticeBundleIdentifierOverride = ""
+    @State private var resolvedProjectBundleIdentifier = ""
 
     private let composerTips = [
         "Shift+Return for newline",
@@ -1299,74 +1353,199 @@ struct ContentView: View {
         !selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var filteredConsoleText: String {
-        let query = consoleSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lines = consoleStore.lines
-        if query.isEmpty {
-            return lines.joined(separator: "\n")
+    private var consoleProjectName: String {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? "No project" : (path as NSString).lastPathComponent
+    }
+
+    private var consoleSessionViews: [(session: LatticeConsoleSession, entries: [LatticeConsoleEntry])] {
+        consoleStore.sessions.map { session in
+            (session, session.lines.map(LatticeConsoleEntry.init(rawLine:)))
         }
-        return lines.filter { $0.localizedCaseInsensitiveContains(query) }.joined(separator: "\n")
+    }
+
+    private var filteredConsoleSessions: [(session: LatticeConsoleSession, entries: [LatticeConsoleEntry])] {
+        let query = consoleSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty {
+            return consoleSessionViews
+        }
+        return consoleSessionViews.compactMap { pair in
+            let entries = pair.entries.filter {
+                $0.raw.localizedCaseInsensitiveContains(query)
+                    || $0.category.localizedCaseInsensitiveContains(query)
+                    || $0.message.localizedCaseInsensitiveContains(query)
+            }
+            return entries.isEmpty ? nil : (pair.session, entries)
+        }
+    }
+
+    private var filteredConsoleText: String {
+        filteredConsoleSessions
+            .flatMap { pair in
+                ["# \(pair.session.title)"] + pair.entries.map(\.raw)
+            }
+            .joined(separator: "\n")
     }
 
     @ViewBuilder
-    private var consoleSheetRoot: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "terminal")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                            let name = path.isEmpty ? "No project" : (path as NSString).lastPathComponent
-                            Text(name)
-                                .font(.subheadline.weight(.semibold))
-                            Text("\(consoleStore.lines.count) lines")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    TextField("Filter log…", text: $consoleSearch)
-                        .textFieldStyle(.roundedBorder)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-                .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.10, shadowOpacity: 0.06)
-                .padding(.horizontal, 12)
+    private var consoleDock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            Circle()
+                                .fill(Color.primary.opacity(0.08))
+                        )
 
-                ScrollView {
-                    Text(filteredConsoleText.isEmpty ? "No console output yet for this project." : filteredConsoleText)
-                        .font(.system(.caption, design: .monospaced))
-                        .multilineTextAlignment(.leading)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.09, shadowOpacity: 0.05)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Build Console")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("\(consoleProjectName) · \(consoleStore.sessions.count) sessions")
+                            .font(.caption)
+                            .foregroundStyle(.secondary.opacity(0.9))
+                    }
                 }
+
+                Spacer(minLength: 8)
+
+                TextField("Filter log…", text: $consoleSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+
+                Button {
+                    copyTextAndToast(filteredConsoleText, toast: "Log copied")
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Copy log")
+
+                Button(role: .destructive) {
+                    consoleStore.clear(projectPath: selectedProjectPath)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Clear log")
+
+                Button {
+                    showConsoleSheet = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Close console")
             }
-            .navigationTitle("Console")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { showConsoleSheet = false }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Copy") {
-                        copyTextAndToast(filteredConsoleText, toast: "Log copied")
+
+            Group {
+                if filteredConsoleSessions.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("No console output yet")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                        Text("Builds, local runs, and diagnostics for this project will show up here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary.opacity(0.9))
                     }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Clear", role: .destructive) {
-                        consoleStore.clear(projectPath: selectedProjectPath)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 16)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(filteredConsoleSessions.enumerated()), id: \.element.session.id) { _, pair in
+                                consoleSessionSection(pair.session, entries: pair.entries)
+                            }
+                        }
+                        .padding(.vertical, 2)
                     }
+                    .frame(maxHeight: 260)
                 }
             }
         }
-        .frame(minWidth: 560, minHeight: 440)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 12, y: 3)
+    }
+
+    @ViewBuilder
+    private func consoleSessionSection(_ session: LatticeConsoleSession, entries: [LatticeConsoleEntry]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(session.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(session.startedAt)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary.opacity(0.82))
+                Spacer(minLength: 0)
+                Text("\(entries.count) lines")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary.opacity(0.74))
+            }
+            .padding(.horizontal, 4)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(entries) { entry in
+                    consoleEntryRow(entry)
+                }
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private func consoleEntryRow(_ entry: LatticeConsoleEntry) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(entry.category.uppercased())
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary.opacity(0.78))
+                .tracking(0.35)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule()
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .frame(width: 82, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 3) {
+                if let timestamp = entry.timestamp {
+                    Text(timestamp)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.82))
+                }
+                Text(entry.message)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.primary.opacity(0.88))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.018))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.04), lineWidth: 1)
+        )
     }
 
     private var mainChatStack: some View {
@@ -1374,23 +1553,20 @@ struct ContentView: View {
             LatticeWindowBackdrop()
                 .ignoresSafeArea()
 
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .ignoresSafeArea()
+            VStack(spacing: 10) {
+                VStack(spacing: 10) {
+                    contextBar
+                        .padding(.top, 10)
+                }
+                .padding(.horizontal, 12)
 
-            VStack(spacing: 0) {
-                contextBar
-                if let summary = viewModel.projectSummary, !summary.isEmpty, !showProjectHub {
-                    Divider()
-                    ProjectSummaryStrip(summary: summary, projectPath: selectedProjectPath)
-                }
-                Divider()
-                if let banner = directRunBanner {
-                    directRunBannerView(banner)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
                 messageList
-                Divider()
+                    .padding(.top, 2)
+                if hasSelectedProject, showConsoleSheet, !showProjectHub {
+                    consoleDock
+                        .padding(.horizontal, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 inputBar
             }
             // Inspector column resizes the chat strip every frame; implicit animations + nested Materials
@@ -1489,13 +1665,13 @@ struct ContentView: View {
         if hasSelectedProject, !showProjectHub {
             ToolbarItem(placement: .automatic) {
                 Button {
-                    showConsoleSheet = true
+                    showConsoleSheet.toggle()
                 } label: {
-                    Image(systemName: "terminal")
+                    Image(systemName: showConsoleSheet ? "terminal.fill" : "terminal")
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 30, height: 30)
                 }
-                .help("Console for this project")
+                .help(showConsoleSheet ? "Hide Console" : "Show Console")
                 .controlSize(.small)
             }
             // TODO(lattice-history-ui): Restore this toolbar entry after full regression pass.
@@ -1540,12 +1716,11 @@ struct ContentView: View {
     private var chatSurfaceWithSheets: some View {
         mainChatStack
             .animation(.spring(response: 0.32, dampingFraction: 0.86), value: directRunBanner != nil)
+            .animation(.spring(response: 0.28, dampingFraction: 0.88), value: showConsoleSheet)
             .preferredColorScheme(preferredAppearance)
             .tint(accentTint)
-            .sheet(isPresented: $showConsoleSheet) {
-                consoleSheetRoot
-            }
             .toolbar { latticeMainToolbar }
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
     }
 
     private var layeredMainInterface: some View {
@@ -1617,6 +1792,8 @@ struct ContentView: View {
                 launchHubApplied = true
                 showProjectHub = true
             }
+            loadBundleIdentifierOverrideForSelectedProject()
+            refreshResolvedProjectBundleIdentifier()
         }
         .onReceive(NotificationCenter.default.publisher(for: .latticeOpenWelcomeHub)) { _ in
             showProjectHub = true
@@ -1658,8 +1835,13 @@ struct ContentView: View {
             } else if trimmed != oldTrimmed {
                 recentStore.add(path: trimmed)
             }
+            loadBundleIdentifierOverrideForSelectedProject()
+            refreshResolvedProjectBundleIdentifier()
             refreshProjectDerivedSettings()
             applyGeneratedSummaryIconIfPossible()
+        }
+        .onChange(of: latticeBundleIdentifierOverride) { _, _ in
+            persistBundleIdentifierOverrideForSelectedProject()
         }
         .onChange(of: viewModel.projectSummary) { _, _ in
             applyGeneratedSummaryIconIfPossible()
@@ -1756,6 +1938,8 @@ struct ContentView: View {
             },
             canOpenDestination: localRunDestination == .iOSSimulator || localRunDestination == .watchOSSimulator
         )
+        .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
@@ -1829,52 +2013,69 @@ struct ContentView: View {
         let projectRoot = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 0) {
-                contextProjectTitle(folderShort: folderShort, path: projectRoot)
+            HStack(alignment: .center, spacing: 10) {
+                contextProjectTitle(
+                    folderShort: folderShort,
+                    path: projectRoot,
+                    providerLabel: prov.displayName,
+                    modelLabel: modelLabel
+                )
+                .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
 
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.24))
-                    .frame(width: 1, height: 14)
-                    .padding(.horizontal, 14)
+                contextRunPill(icon: simIcon, title: "Run target", value: simLabel)
+                    .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(prov.displayName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(modelLabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-                .frame(minWidth: 120, alignment: .leading)
-                .padding(.trailing, 18)
-
-                HStack(spacing: 10) {
-                    contextRunPill(icon: simIcon, title: "Run target", value: simLabel)
+                if let summary = viewModel.projectSummary, !summary.isEmpty {
+                    ProjectSummaryStrip(summary: summary, projectPath: selectedProjectPath, compact: true)
+                        .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.14))
-                .frame(height: 1)
         }
     }
 
-    private func contextProjectTitle(folderShort: String, path: String) -> some View {
+    private func contextProjectTitle(folderShort: String, path: String, providerLabel: String, modelLabel: String) -> some View {
         let exists = !path.isEmpty && FileManager.default.fileExists(atPath: path)
-        return HStack(spacing: 8) {
-            Image(systemName: "folder.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(folderShort)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+        return HStack(alignment: .center, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                Image(systemName: "folder.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(folderShort)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Text("Current project")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.70))
+                        .tracking(0.35)
+
+                    Circle()
+                        .fill(Color.secondary.opacity(0.28))
+                        .frame(width: 3, height: 3)
+
+                    Text(providerLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary.opacity(0.84))
+                        .lineLimit(1)
+
+                    Text(modelLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.trailing, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .contextMenu {
             Button("Reveal in Finder") {
                 guard exists else { return }
@@ -1893,7 +2094,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title.uppercased())
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary.opacity(0.72))
                     .tracking(0.4)
                 Text(value)
                     .font(.caption.weight(.medium))
@@ -1902,8 +2103,8 @@ struct ContentView: View {
             }
             .frame(maxWidth: 200, alignment: .leading)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     // MARK: - Message list
@@ -1934,7 +2135,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: 1).id("transcriptTop")
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 14) {
                         if viewModel.items.isEmpty {
                             transcriptEmptyPlaceholder
                         }
@@ -1972,9 +2173,16 @@ struct ContentView: View {
                     Color.clear.frame(height: 1).id("transcriptBottom")
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.vertical, 10)
             }
-            .background(.thinMaterial.opacity(0.45))
+            .background(Color.clear)
+            .overlay(alignment: .top) {
+                if let banner = directRunBanner {
+                    directRunBannerView(banner)
+                        .padding(.top, 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             .onChange(of: viewModel.transcriptScrollToBottomToken) { _, _ in
                 scrollTranscriptToBottom(using: proxy)
             }
@@ -1998,12 +2206,12 @@ struct ContentView: View {
     // MARK: - Input bar
 
     private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .center, spacing: 0) {
                 ZStack(alignment: .topLeading) {
                     if input.isEmpty {
                         Text("Describe the app or feature to build…")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary.opacity(0.96))
                             .padding(.leading, 12)
                             .padding(.top, 11)
                             .allowsHitTesting(false)
@@ -2059,19 +2267,19 @@ struct ContentView: View {
                 .padding(.trailing, 6)
                 .padding(.vertical, 2)
             }
-            .latticeElevatedCard(radius: LatticeSurfaceTokens.cornerMedium, strokeOpacity: 0.12, shadowOpacity: 0.08)
+            .latticeElevatedCard(radius: 18, strokeOpacity: 0.08, shadowOpacity: 0.04)
 
             Text(composerTips[composerTipIndex % composerTips.count])
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary.opacity(0.78))
                 .padding(.leading, 4)
                 .opacity(latticeShowComposerTips ? 1 : 0)
                 .accessibilityHidden(!latticeShowComposerTips)
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
-        .opacity(canSend || viewModel.isRunning ? 1 : 0.55)
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 10)
+        .opacity(canSend || viewModel.isRunning ? 1 : 0.78)
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             composerTipIndex += 1
         }
@@ -2145,6 +2353,11 @@ struct ContentView: View {
 
         isDirectRunInProgress = true
         directRunBanner = nil
+        consoleStore.beginSession(
+            title: localRunDestination == .macOS ? "Local run on My Mac" : "Local run on \(currentRunTargetLabel)",
+            category: "xcodebuild",
+            projectPath: root
+        )
 
         Task { @MainActor in
             defer { isDirectRunInProgress = false }
@@ -2241,11 +2454,79 @@ struct ContentView: View {
             provider: selectedProvider,
             zaiUseCodingEndpoint: zaiUseCodingEndpoint,
             buildInfo: nil,
-            bundleIdentifierOverride: latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? nil : latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines),
+            bundleIdentifierOverride: effectiveBundleIdentifierForContext,
             developmentTeam: resolvedDevelopmentTeam,
             projectSummary: viewModel.projectSummary
         )
+    }
+
+    private var effectiveBundleIdentifierForContext: String? {
+        let override = latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty { return override }
+        let resolved = resolvedProjectBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolved.isEmpty { return resolved }
+        return defaultBundleIdentifierForSelectedProject
+    }
+
+    private var defaultBundleIdentifierForSelectedProject: String? {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        let name = (path as NSString).lastPathComponent
+        let slug = name.lowercased().filter { $0.isLetter || $0.isNumber }
+        guard !slug.isEmpty else { return nil }
+        return "com.lattice.\(slug)"
+    }
+
+    private var bundleIdentifierOverrides: [String: String] {
+        guard let data = latticeBundleIdentifierOverridesJSON.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    private func loadBundleIdentifierOverrideForSelectedProject() {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            latticeBundleIdentifierOverride = ""
+            return
+        }
+        latticeBundleIdentifierOverride = bundleIdentifierOverrides[path] ?? ""
+    }
+
+    private func persistBundleIdentifierOverrideForSelectedProject() {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return }
+        var overrides = bundleIdentifierOverrides
+        let trimmed = latticeBundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            overrides.removeValue(forKey: path)
+        } else {
+            overrides[path] = trimmed
+        }
+        if let data = try? JSONEncoder().encode(overrides),
+           let string = String(data: data, encoding: .utf8) {
+            latticeBundleIdentifierOverridesJSON = string
+        }
+    }
+
+    private func refreshResolvedProjectBundleIdentifier() {
+        let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            resolvedProjectBundleIdentifier = ""
+            return
+        }
+        Task {
+            do {
+                let resolved = try await ProjectAppIdentityEditor.resolvedBundleIdentifier(projectRoot: URL(fileURLWithPath: path))
+                await MainActor.run {
+                    resolvedProjectBundleIdentifier = resolved ?? ""
+                }
+            } catch {
+                await MainActor.run {
+                    resolvedProjectBundleIdentifier = ""
+                }
+            }
+        }
     }
 
     private func buildChatDisplayRows(from items: [ChatItem]) -> [ChatDisplayRow] {
@@ -2301,6 +2582,33 @@ private struct BuildBannerCopyButtonStyle: ViewModifier {
     }
 }
 
+private struct LatticeConsoleEntry: Identifiable {
+    let id = UUID()
+    let raw: String
+    let timestamp: String?
+    let category: String
+    let message: String
+
+    nonisolated init(rawLine: String) {
+        self.raw = rawLine
+        let pattern = #"^\[([^\]]+)\]\s+\[([^\]]+)\]\s*(.*)$"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: rawLine, range: NSRange(rawLine.startIndex..., in: rawLine)),
+           let timestampRange = Range(match.range(at: 1), in: rawLine),
+           let categoryRange = Range(match.range(at: 2), in: rawLine),
+           let messageRange = Range(match.range(at: 3), in: rawLine) {
+            self.timestamp = String(rawLine[timestampRange])
+            self.category = String(rawLine[categoryRange]).replacingOccurrences(of: "-", with: " ")
+            let parsedMessage = String(rawLine[messageRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            self.message = parsedMessage.isEmpty ? rawLine : parsedMessage
+        } else {
+            self.timestamp = nil
+            self.category = "log"
+            self.message = rawLine
+        }
+    }
+}
+
 private struct DirectRunBannerCard: View {
     let rawText: String
     let isError: Bool
@@ -2315,6 +2623,12 @@ private struct DirectRunBannerCard: View {
 
     @State private var showDetails = false
 
+    private enum StatusKind {
+        case success
+        case warning
+        case error
+    }
+
     private var lines: [String] {
         rawText
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -2323,7 +2637,8 @@ private struct DirectRunBannerCard: View {
     }
 
     private var headline: String {
-        if isError { return "Build failed" }
+        if statusKind == .error { return "Build failed" }
+        if statusKind == .warning { return "Build completed with warnings" }
         if lines.first?.lowercased().hasPrefix("launched ") == true {
             return "Opened in \(destinationLabel)"
         }
@@ -2331,8 +2646,11 @@ private struct DirectRunBannerCard: View {
     }
 
     private var subtitle: String {
-        if isError {
+        if statusKind == .error {
             return "Review the error or send it back to Lattice."
+        }
+        if statusKind == .warning {
+            return "The build completed, but Xcode reported warnings worth checking."
         }
         switch destination {
         case .iOSSimulator, .watchOSSimulator:
@@ -2341,6 +2659,22 @@ private struct DirectRunBannerCard: View {
             return "The app built and launch was requested on the connected device."
         case .macOS:
             return "The app built and was opened on this Mac."
+        }
+    }
+
+    private var statusKind: StatusKind {
+        if isError { return .error }
+        if visibleDetailLines.contains(where: { $0.localizedCaseInsensitiveContains("warning:") }) {
+            return .warning
+        }
+        return .success
+    }
+
+    private var accentColor: Color {
+        switch statusKind {
+        case .success: return .green
+        case .warning: return .yellow
+        case .error: return .orange
         }
     }
 
@@ -2353,29 +2687,44 @@ private struct DirectRunBannerCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(isError ? Color.orange : Color.green.opacity(0.9))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: statusKind == .error ? "exclamationmark.triangle.fill" : (statusKind == .warning ? "exclamationmark.circle.fill" : "checkmark.circle.fill"))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(accentColor.opacity(0.92))
 
                 VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("Local run")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary.opacity(0.72))
+                            .tracking(0.36)
+                        Text(destinationLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary.opacity(0.84))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.045))
+                            )
+                    }
                     Text(headline)
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondary.opacity(0.88))
                 }
 
                 Spacer(minLength: 8)
 
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .padding(8)
-                        .background(Circle().fill(Color.primary.opacity(0.05)))
+                        .padding(7)
+                        .background(Circle().fill(Color.primary.opacity(0.04)))
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss")
@@ -2383,8 +2732,8 @@ private struct DirectRunBannerCard: View {
 
             if let first = visibleDetailLines.first {
                 Text(first)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary.opacity(0.86))
                     .textSelection(.enabled)
             }
 
@@ -2398,22 +2747,18 @@ private struct DirectRunBannerCard: View {
                         HStack(spacing: 8) {
                             Image(systemName: showDetails ? "chevron.down" : "chevron.right")
                                 .font(.caption2.weight(.bold))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary.opacity(0.82))
                                 .frame(width: 10)
                             Text(showDetails ? "Hide details" : "View details")
                                 .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondary.opacity(0.92))
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.primary.opacity(0.035))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                            Capsule()
+                                .fill(Color.primary.opacity(0.04))
                         )
                     }
                     .buttonStyle(.plain)
@@ -2431,19 +2776,19 @@ private struct DirectRunBannerCard: View {
                 }
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if isError {
                     Button(action: onFix) {
                         Label("Let Lattice fix it", systemImage: "wand.and.stars")
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
+                    .controlSize(.small)
                 } else if canOpenDestination {
                     Button(action: onOpenDestination) {
                         Label("Open Simulator", systemImage: "play.rectangle")
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.regular)
+                    .controlSize(.small)
                 }
 
                 Button(action: onCopy) {
@@ -2459,16 +2804,27 @@ private struct DirectRunBannerCard: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                    statusKind == .error
+                        ? Color.orange.opacity(0.045)
+                        : statusKind == .warning
+                            ? Color.yellow.opacity(0.045)
+                            : Color.green.opacity(0.04)
+                )
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(isError ? 0.14 : 0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    accentColor.opacity(statusKind == .success ? 0.12 : 0.16),
+                    lineWidth: 1
+                )
         )
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+        .shadow(color: .black.opacity(0.026), radius: 6, y: 2)
     }
 }
 
@@ -2550,33 +2906,177 @@ private struct MessageCopyButton: View {
 private struct ProjectSummaryStrip: View {
     let summary: LatticeProjectSummary
     let projectPath: String
+    var compact: Bool = false
 
     private var appNameLine: String {
         let value = summary.appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? "Untitled app" : value
     }
 
+    private var conceptLine: String? {
+        let value = summary.concept?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
+    private var detailPills: [(String, String)] {
+        var rows: [(String, String)] = []
+        if let navigation = summary.navigation?.trimmingCharacters(in: .whitespacesAndNewlines), !navigation.isEmpty {
+            rows.append(("arrow.triangle.branch", navigation))
+        }
+        if let designDirection = summary.designDirection?.trimmingCharacters(in: .whitespacesAndNewlines), !designDirection.isEmpty {
+            rows.append(("paintpalette", designDirection))
+        }
+        let openIssues = (summary.openIssues ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !openIssues.isEmpty {
+            rows.append(("exclamationmark.bubble", openIssues.count == 1 ? "1 open issue" : "\(openIssues.count) open issues"))
+        }
+        return rows
+    }
+
     var body: some View {
+        Group {
+            if compact {
+                compactHeaderLayout
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    expandedLayout
+                    compactLayout
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.primary.opacity(0.035),
+                                    Color.primary.opacity(0.014)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+            }
+        }
+    }
+
+    private var expandedLayout: some View {
         HStack(alignment: .center, spacing: 12) {
             ProjectSummaryBadge(summary: summary, projectPath: projectPath)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Current app")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary.opacity(0.68))
+                    .tracking(0.38)
                 Text(appNameLine)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                if let concept = summary.concept?.trimmingCharacters(in: .whitespacesAndNewlines), !concept.isEmpty {
-                    Text(concept)
+                if let conceptLine {
+                    Text(conceptLine)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .foregroundStyle(.secondary.opacity(0.94))
+                        .lineLimit(1)
                 }
             }
+
             Spacer(minLength: 10)
+
+            HStack(spacing: 6) {
+                ForEach(Array(detailPills.prefix(2).enumerated()), id: \.offset) { _, pill in
+                    ProjectSummaryDetailPill(icon: pill.0, text: pill.1)
+                }
+            }
         }
-        .padding(.horizontal, 14)
+    }
+
+    private var compactLayout: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ProjectSummaryBadge(summary: summary, projectPath: projectPath)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Current app")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary.opacity(0.68))
+                    .tracking(0.36)
+                Text(appNameLine)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let conceptLine {
+                    Text(conceptLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary.opacity(0.92))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var compactHeaderLayout: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ProjectSummaryBadge(summary: summary, projectPath: projectPath)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Current app")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary.opacity(0.66))
+                    .tracking(0.34)
+                Text(appNameLine)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let conceptLine {
+                    Text(conceptLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.82))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: 248, alignment: .leading)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.primary.opacity(0.025))
+    }
+}
+
+private struct ProjectSummaryDetailPill: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.9))
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.96))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
+        )
     }
 }
 
@@ -2605,7 +3105,7 @@ private struct ProjectSummaryBadge: View {
             }
         }
         .frame(width: 34, height: 34)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
     }
 }
@@ -2851,11 +3351,36 @@ private struct AssistantProseCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if isErrorText {
-                Label("Something went wrong", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.orange)
+                        .frame(width: 18, height: 18)
+                        .background(
+                            Circle()
+                                .fill(Color.orange.opacity(0.12))
+                        )
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Something went wrong")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.orange.opacity(0.96))
+                        Text("The provider rejected this request.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary.opacity(0.86))
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.orange.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.orange.opacity(0.18), lineWidth: 1)
+                )
             }
             MarkdownBlock(text: text, isStreaming: streaming)
             if streaming, !text.isEmpty {
@@ -2868,8 +3393,8 @@ private struct AssistantProseCard: View {
                 }
             }
         }
-        .padding(.horizontal, unifiedTurn ? 2 : 14)
-        .padding(.vertical, unifiedTurn ? 6 : 12)
+        .padding(.horizontal, unifiedTurn ? 2 : 16)
+        .padding(.vertical, unifiedTurn ? 6 : 14)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
         .background(proseBackground)
         .overlay(proseStroke)
@@ -2889,10 +3414,10 @@ private struct AssistantProseCard: View {
     private var proseStroke: some View {
         if isErrorText {
             RoundedRectangle(cornerRadius: unifiedTurn ? 12 : LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+                .strokeBorder(Color.orange.opacity(0.18), lineWidth: 1)
                 .background(
                     RoundedRectangle(cornerRadius: unifiedTurn ? 12 : LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                        .fill(Color.orange.opacity(0.08))
+                        .fill(Color.orange.opacity(0.04))
                 )
         } else if !unifiedTurn {
             RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
@@ -2960,7 +3485,7 @@ private struct ReasoningCollapsibleCard: View {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(streaming ? "Live notes" : "Notes")
+                            Text(streaming ? "Live notes" : "Work notes")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.primary)
                             if streaming {
@@ -2971,11 +3496,11 @@ private struct ReasoningCollapsibleCard: View {
                         if text.isEmpty, streaming {
                             Text("…")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary.opacity(0.92))
+                                .foregroundStyle(.secondary.opacity(0.98))
                         } else if !previewSnippet.isEmpty {
                             Text(previewSnippet)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary.opacity(0.92))
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary.opacity(0.98))
                                 .lineLimit(streaming ? 2 : 1)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2986,17 +3511,13 @@ private struct ReasoningCollapsibleCard: View {
 
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary.opacity(0.9))
+                        .foregroundStyle(.secondary.opacity(0.96))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(unifiedTurn ? Color.primary.opacity(0.035) : Color.secondary.opacity(0.08))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(unifiedTurn ? 0.08 : 0.16), lineWidth: 1)
+                        .fill(unifiedTurn ? Color.primary.opacity(0.028) : Color.secondary.opacity(0.06))
                 )
                 .contentShape(Rectangle())
             }
@@ -3011,7 +3532,7 @@ private struct ReasoningCollapsibleCard: View {
                 } else {
                     Text(fullReasoningText)
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.86))
                         .textSelection(.disabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineSpacing(4)
@@ -3019,7 +3540,7 @@ private struct ReasoningCollapsibleCard: View {
                 }
             }
         }
-        .padding(.horizontal, unifiedTurn ? 2 : 6)
+        .padding(.horizontal, unifiedTurn ? 0 : 4)
         .padding(.vertical, unifiedTurn ? 4 : 6)
         .frame(maxWidth: latticeAssistantProseMaxWidth, alignment: .leading)
         .onChange(of: streaming) { _, isStreaming in
@@ -3050,16 +3571,12 @@ private struct LatticeToolActivitySection<Content: View>: View {
         Group {
             if unifiedTurn {
                 content()
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 5)
                     .padding(.horizontal, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.primary.opacity(0.03))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.primary.opacity(0.018))
                     )
             } else {
                 content()
@@ -3095,7 +3612,7 @@ private struct DirectorOutcomeBlock: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.0.uppercased())
                         .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondary.opacity(0.82))
                         .tracking(0.4)
                     Text(row.1)
                         .font(.caption)
@@ -3108,11 +3625,7 @@ private struct DirectorOutcomeBlock: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                .fill(Color.primary.opacity(0.022))
         )
     }
 }
@@ -3140,18 +3653,14 @@ private struct AssistantWorkingIndicatorRow: View {
             }
             Text(title)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary.opacity(0.94))
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                .fill(Color.primary.opacity(0.028))
         )
     }
 }
@@ -3277,6 +3786,10 @@ private struct AssistantTurnCard: View {
         return items.contains { $0.id == pendingRetry.errorItemId }
     }
 
+    private var retryButtonTitle: String {
+        pendingRetry?.resumeFromLastStableStep == true ? "Resume this response" : "Retry this response"
+    }
+
     private var copyableText: String {
         if isTurnComplete {
             var blocks: [String] = []
@@ -3347,7 +3860,7 @@ private struct AssistantTurnCard: View {
                     }
                     if showsRetry {
                         Button(action: onRetry) {
-                            Label("Retry this response", systemImage: "arrow.clockwise.circle")
+                            Label(retryButtonTitle, systemImage: "arrow.clockwise.circle")
                                 .font(.caption.weight(.semibold))
                         }
                         .buttonStyle(.bordered)
@@ -3360,15 +3873,15 @@ private struct AssistantTurnCard: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                    .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
+            .shadow(color: .black.opacity(0.032), radius: 10, y: 4)
             .fixedSize(horizontal: false, vertical: true)
 
             if !copyableText.isEmpty {
@@ -3411,7 +3924,7 @@ private struct AssistantTurnCard: View {
             HStack(spacing: 8) {
                 Image(systemName: workCollapsed ? "chevron.right" : "chevron.down")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary.opacity(0.84))
                     .frame(width: 10, alignment: .center)
 
                 if !isTurnComplete {
@@ -3421,7 +3934,7 @@ private struct AssistantTurnCard: View {
 
                 Text(workCollapsed ? collapsedWorkSummary : "Hide build log")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary.opacity(0.94))
 
                 Spacer(minLength: 0)
             }
@@ -3429,11 +3942,7 @@ private struct AssistantTurnCard: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                    .fill(Color.primary.opacity(0.02))
             )
             .contentShape(Rectangle())
         }
@@ -3590,18 +4099,18 @@ private struct ToolTimelineStepRow: View {
                     HStack(alignment: .center, spacing: 6) {
                         Image(systemName: toolIcon)
                             .font(.caption2)
-                            .foregroundStyle(isError ? Color.orange.opacity(0.95) : Color.secondary)
+                            .foregroundStyle(isError ? Color.orange.opacity(0.95) : Color.secondary.opacity(0.92))
                             .frame(width: 14, alignment: .center)
 
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(name)
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.primary.opacity(0.94))
                                 .lineLimit(1)
                             if !displayInput.isEmpty {
                                 Text(displayInput)
                                     .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.secondary.opacity(0.92))
+                                    .foregroundStyle(.secondary.opacity(0.82))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
@@ -3617,8 +4126,8 @@ private struct ToolTimelineStepRow: View {
                                 .foregroundStyle(.secondary.opacity(0.9))
                         }
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -3660,17 +4169,12 @@ private struct ToolTimelineStepRow: View {
                 }
             }
             .animation(rowExpandAnimation, value: outputExpanded)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color.primary.opacity(isError ? 0.05 : 0.035))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(
-                        isError ? Color.orange.opacity(0.20) : Color.primary.opacity(0.08),
-                        lineWidth: 1
-                    )
-            )
+            .background(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.primary.opacity(isError ? 0.09 : 0.05))
+                    .frame(height: 1)
+                    .padding(.leading, 8)
+            }
         }
         .padding(.vertical, 2)
         .id(stableId)
@@ -4392,11 +4896,29 @@ struct ProjectInspectorView: View {
             buildNumber: identityBuildNumber
         )
         do {
-            try await ProjectAppIdentityEditor.save(projectRoot: URL(fileURLWithPath: path), identity: identity)
+            try await ProjectAppIdentityEditor.save(
+                projectRoot: URL(fileURLWithPath: path),
+                identity: identity,
+                bundleIdentifier: effectiveInspectorBundleIdentifier,
+                developmentTeam: developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil : developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             loadAppIdentity()
+            refreshResolvedBundleIdentifier()
         } catch {
             identityError = error.localizedDescription
         }
+    }
+
+    private var effectiveInspectorBundleIdentifier: String? {
+        let override = bundleIdentifierOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty { return override }
+        let resolved = resolvedBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolved.isEmpty { return resolved }
+        let name = (selectedProjectPath as NSString).lastPathComponent
+        let slug = name.lowercased().filter { $0.isLetter || $0.isNumber }
+        guard !slug.isEmpty else { return nil }
+        return "com.lattice.\(slug)"
     }
 
     private func openProjectInXcode() async {
@@ -4439,3 +4961,5 @@ struct ContentView_Previews: PreviewProvider {
         )
     }
 }
+
+

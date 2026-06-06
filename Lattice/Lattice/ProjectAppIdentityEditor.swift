@@ -96,16 +96,31 @@ enum ProjectAppIdentityEditor {
     }
 
     /// Writes into `project.pbxproj` and, when `INFOPLIST_FILE` exists on disk, updates that plist too.
-    static func save(projectRoot: URL, identity: ProjectAppIdentity) async throws {
+    static func save(
+        projectRoot: URL,
+        identity: ProjectAppIdentity,
+        bundleIdentifier: String? = nil,
+        developmentTeam: String? = nil
+    ) async throws {
         let settings = try await buildSettingsDump(projectRoot: projectRoot)
-        try applyPbxprojIdentity(projectRoot: projectRoot, identity: identity)
+        try applyPbxprojIdentity(
+            projectRoot: projectRoot,
+            identity: identity,
+            bundleIdentifier: bundleIdentifier,
+            developmentTeam: developmentTeam
+        )
         if let rawPlist = value(for: "INFOPLIST_FILE", in: settings),
            let plistURL = resolveInfoPlistURL(projectRoot: projectRoot, infoPlistSetting: rawPlist) {
             try mergeInfoPlist(at: plistURL, identity: identity)
         }
     }
 
-    private static func applyPbxprojIdentity(projectRoot: URL, identity: ProjectAppIdentity) throws {
+    private static func applyPbxprojIdentity(
+        projectRoot: URL,
+        identity: ProjectAppIdentity,
+        bundleIdentifier: String?,
+        developmentTeam: String?
+    ) throws {
         let projURL = try findContainedXcodeProj(projectRoot: projectRoot)
         let pbxPath = projURL.appendingPathComponent("project.pbxproj")
         var text = try String(contentsOf: pbxPath, encoding: .utf8)
@@ -124,7 +139,9 @@ enum ProjectAppIdentityEditor {
                 productName: identity.productName,
                 displayName: identity.displayName,
                 marketingVersion: identity.marketingVersion,
-                buildNumber: identity.buildNumber
+                buildNumber: identity.buildNumber,
+                bundleIdentifier: bundleIdentifier,
+                developmentTeam: developmentTeam
             )
             text.replaceSubrange(range, with: updated)
         }
@@ -252,13 +269,29 @@ enum ProjectAppIdentityEditor {
         productName: String,
         displayName: String,
         marketingVersion: String,
-        buildNumber: String
+        buildNumber: String,
+        bundleIdentifier: String?,
+        developmentTeam: String?
     ) -> String {
         var result = block
         result = setOrInsertBuildSetting(result, key: "PRODUCT_NAME", value: pbxEscape(productName))
         result = setOrInsertBuildSetting(result, key: "INFOPLIST_KEY_CFBundleDisplayName", value: pbxEscape(displayName))
         result = setOrInsertBuildSetting(result, key: "MARKETING_VERSION", value: pbxEscape(marketingVersion))
         result = setOrInsertBuildSetting(result, key: "CURRENT_PROJECT_VERSION", value: pbxEscape(buildNumber))
+        if let bundleIdentifier, !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result = setOrInsertBuildSetting(
+                result,
+                key: "PRODUCT_BUNDLE_IDENTIFIER",
+                value: pbxEscape(bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines))
+            )
+        }
+        if let developmentTeam, !developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result = setOrInsertBuildSetting(
+                result,
+                key: "DEVELOPMENT_TEAM",
+                value: pbxEscape(developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines))
+            )
+        }
         return result
     }
 

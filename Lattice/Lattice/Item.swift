@@ -180,6 +180,9 @@ enum ChatSessionPersistence {
         "latticeProjectSummaryV1.\(fingerprint(for: path))"
     }
 
+    private static let maxPersistedItemsDataBytes = 1_200_000
+    private static let maxPersistedHistoryDataBytes = 1_600_000
+
     static func loadItems(projectPath: String) -> [ChatItem] {
         let key = itemsKey(forProjectPath: projectPath)
         if let data = UserDefaults.standard.data(forKey: key),
@@ -198,9 +201,14 @@ enum ChatSessionPersistence {
     }
 
     static func saveItems(_ items: [ChatItem], projectPath: String) {
-        let rows = items.compactMap { item -> PersistedChatItem? in
+        var rows = items.compactMap { item -> PersistedChatItem? in
             if case .working = item.kind { return nil }
             return PersistedChatItem(chatItem: item)
+        }
+        while rows.count > 1,
+              let probe = try? JSONEncoder().encode(rows),
+              probe.count > maxPersistedItemsDataBytes {
+            rows.removeFirst()
         }
         guard let data = try? JSONEncoder().encode(rows) else { return }
         UserDefaults.standard.set(data, forKey: itemsKey(forProjectPath: projectPath))
@@ -225,9 +233,19 @@ enum ChatSessionPersistence {
     }
 
     static func saveHistory(_ history: [[String: Any]], projectPath: String) {
-        guard JSONSerialization.isValidJSONObject(history),
-              let data = try? JSONSerialization.data(withJSONObject: history)
+        guard JSONSerialization.isValidJSONObject(history)
         else { return }
+        var trimmed = history
+        var data: Data?
+        while !trimmed.isEmpty {
+            if let probe = try? JSONSerialization.data(withJSONObject: trimmed),
+               probe.count <= maxPersistedHistoryDataBytes {
+                data = probe
+                break
+            }
+            trimmed.removeFirst()
+        }
+        guard let data else { return }
         UserDefaults.standard.set(data, forKey: historyKey(forProjectPath: projectPath))
     }
 

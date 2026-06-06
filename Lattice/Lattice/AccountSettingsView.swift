@@ -70,6 +70,38 @@ struct AccountSettingsView: View {
         }
     }
 
+    private var localRunSelectionTitle: String {
+        switch localRunDestination {
+        case .macOS:
+            return "My Mac"
+        case .iOSDevice:
+            return devicesForSettings.first(where: { $0.id == selectedSimulatorID })?.label ?? "No device selected"
+        case .iOSSimulator:
+            return simulatorsForSettings.first(where: { $0.id == selectedSimulatorID })?.label ?? "No iPhone simulator selected"
+        case .watchOSSimulator:
+            return simulatorsForSettings.first(where: { $0.id == selectedSimulatorID })?.label ?? "No Apple Watch simulator selected"
+        }
+    }
+
+    private var localRunHelperText: String {
+        switch localRunDestination {
+        case .macOS:
+            return "The Run button will build and launch the current project on this Mac."
+        case .iOSDevice:
+            return selectedSimulatorID.isEmpty
+                ? "Pick a connected iPhone or iPad for one-click local runs."
+                : "The Run button will build and launch on the selected connected device."
+        case .iOSSimulator:
+            return selectedSimulatorID.isEmpty
+                ? "Pick the iPhone simulator Lattice should use from the main window."
+                : "The Run button will build, install, and launch in the selected iPhone simulator."
+        case .watchOSSimulator:
+            return selectedSimulatorID.isEmpty
+                ? "Pick the Apple Watch simulator Lattice should use from the main window."
+                : "The Run button will build, install, and launch in the selected watchOS simulator."
+        }
+    }
+
     var body: some View {
         ZStack {
             LatticeWindowBackdrop()
@@ -145,7 +177,17 @@ struct AccountSettingsView: View {
             }
 
             Section {
-                Picker("Run destination", selection: $latticeLocalRunDestinationRaw) {
+                LabeledContent("Current run target") {
+                    Text(localRunSelectionTitle)
+                        .fontWeight(.semibold)
+                }
+
+                Text(localRunHelperText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Picker("Platform", selection: $latticeLocalRunDestinationRaw) {
                     ForEach(LatticeLocalRunDestination.allCases) { dest in
                         Text(dest.settingsLabel).tag(dest.rawValue)
                     }
@@ -154,7 +196,7 @@ struct AccountSettingsView: View {
 
                 if localRunDestination != .macOS {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Picker(localRunDestination == .iOSDevice ? "Device" : "Simulator", selection: $selectedSimulatorID) {
+                        Picker(localRunDestination == .iOSDevice ? "Device" : "Target", selection: $selectedSimulatorID) {
                             Text("None").tag("")
                             if localRunDestination == .iOSDevice {
                                 ForEach(devicesForSettings) { device in
@@ -172,13 +214,18 @@ struct AccountSettingsView: View {
                             simulatorStore.refresh()
                         } label: {
                             if simulatorStore.isLoading {
-                                ProgressView().controlSize(.small)
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Refreshing")
+                                }
                             } else {
-                                Image(systemName: "arrow.clockwise")
+                                Label("Refresh", systemImage: "arrow.clockwise")
                             }
                         }
-                        .buttonStyle(.borderless)
-                        .help("Refresh simulator list")
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(localRunDestination == .iOSDevice ? "Refresh connected devices" : "Refresh simulator list")
                     }
 
                     if let loadError = simulatorStore.loadError {
@@ -187,14 +234,14 @@ struct AccountSettingsView: View {
                             .foregroundStyle(.red)
                     }
                 } else {
-                    Text("macOS builds target “My Mac”; no simulator pick is needed.")
+                    Text("No extra target picker is needed for Mac apps.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("Build & Run")
+                Text("Local Build & Run")
             } footer: {
-                Text("All destination kinds are available here. ⌘R in the main window uses the selected destination; pick a matching simulator or device when needed.")
+                Text("This controls what the Run button in the main window uses. Pick the platform first, then choose the exact simulator or device when needed.")
             }
 
             Section {

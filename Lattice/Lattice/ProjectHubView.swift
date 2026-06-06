@@ -81,6 +81,7 @@ struct ProjectHubView: View {
                     recentStore.add(path: project.path)
                     showProjectHub = false
                 },
+                onTogglePinned: { recentStore.togglePinned($0) },
                 onRemove: { recentStore.remove($0) }
             )
             .padding(.leading, 22)
@@ -123,6 +124,7 @@ struct ProjectHubView: View {
                     recentStore.add(path: project.path)
                     showProjectHub = false
                 },
+                onTogglePinned: { recentStore.togglePinned($0) },
                 onRemove: { recentStore.remove($0) }
             )
             .padding(22)
@@ -276,15 +278,10 @@ private struct HubHeroColumn<Mark: View>: View {
             HStack(alignment: .top, spacing: 18) {
                 welcomeMark
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Build")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .textCase(.uppercase)
-                        .tracking(1.2)
                     Text("Lattice")
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .font(.system(size: 36, weight: .bold))
                         .foregroundStyle(.primary)
-                    Text("Describe an app, scaffold a native project, and iterate all the way through local build and preview. Chat and Build & Run stay on your machine.")
+                    Text("Build native apps with taste.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -306,7 +303,7 @@ private struct HubHeroColumn<Mark: View>: View {
                     Label("Import Existing App", systemImage: "square.and.arrow.down")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(HubSecondaryButtonStyle(colorScheme: colorScheme))
+                .buttonStyle(HubSecondaryButtonStyle())
             }
 
             Spacer(minLength: 20)
@@ -344,6 +341,7 @@ private struct HubRecentsColumn: View {
     var filteredRecents: [RecentProject]
     var relativeTime: RelativeDateTimeFormatter
     var onSelect: (RecentProject) -> Void
+    var onTogglePinned: (RecentProject) -> Void
     var onRemove: (RecentProject) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -382,6 +380,7 @@ private struct HubRecentsColumn: View {
                                 relativeLabel: relativeTime.localizedString(for: project.lastOpened, relativeTo: .now),
                                 colorScheme: colorScheme,
                                 onSelect: { onSelect(project) },
+                                onTogglePinned: { onTogglePinned(project) },
                                 onRemove: { onRemove(project) }
                             )
                         }
@@ -424,6 +423,7 @@ private struct HubRecentRow: View {
     let relativeLabel: String
     var colorScheme: ColorScheme
     var onSelect: () -> Void
+    var onTogglePinned: () -> Void
     var onRemove: () -> Void
 
     @State private var isHovering = false
@@ -441,10 +441,17 @@ private struct HubRecentRow: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(project.displayName)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            if project.isPinned {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.secondary.opacity(0.9))
+                            }
+                            Text(project.displayName)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                        }
                         Spacer(minLength: 8)
                         Text(relativeLabel)
                             .font(.caption.weight(.medium))
@@ -457,9 +464,32 @@ private struct HubRecentRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.quaternary)
+                HStack(spacing: 6) {
+                    if isHovering {
+                        Button(action: onTogglePinned) {
+                            Image(systemName: project.isPinned ? "pin.slash" : "pin")
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .help(project.isPinned ? "Unpin" : "Pin to top")
+
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+                        } label: {
+                            Image(systemName: "folder")
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal in Finder")
+                        .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                    }
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.quaternary)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -473,15 +503,28 @@ private struct HubRecentRow: View {
             )
         }
         .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovering = hovering
+            }
+        }
         .contextMenu {
+            Button(project.isPinned ? "Unpin from top" : "Pin to top", action: onTogglePinned)
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+            }
+            Button("Copy path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(project.path, forType: .string)
+            }
             Button("Remove from recents", role: .destructive, action: onRemove)
         }
     }
 
     private var rowFill: Color {
         if isHovering {
-            return Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.07)
+            return Color.primary.opacity(colorScheme == .dark ? 0.115 : 0.07)
         }
         return Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035)
     }
@@ -543,8 +586,6 @@ private struct HubPrimaryButtonStyle: ButtonStyle {
 }
 
 private struct HubSecondaryButtonStyle: ButtonStyle {
-    var colorScheme: ColorScheme
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.body.weight(.semibold))
@@ -553,13 +594,11 @@ private struct HubSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.10 : 0.075))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.14), lineWidth: 1)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

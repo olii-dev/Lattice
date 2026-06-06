@@ -33,18 +33,34 @@ struct LatticeProjectSummary: Codable, Equatable {
     var appName: String?
     var concept: String?
     var surfaces: [String]
+    var navigation: String?
+    var designDirection: String?
+    var openIssues: [String]?
 
-    init(appName: String? = nil, concept: String? = nil, surfaces: [String] = []) {
+    init(
+        appName: String? = nil,
+        concept: String? = nil,
+        surfaces: [String] = [],
+        navigation: String? = nil,
+        designDirection: String? = nil,
+        openIssues: [String]? = nil
+    ) {
         self.appName = appName
         self.concept = concept
         self.surfaces = surfaces
+        self.navigation = navigation
+        self.designDirection = designDirection
+        self.openIssues = openIssues
     }
 
     var isEmpty: Bool {
         let hasAppName = !(appName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let hasConcept = !(concept?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let hasSurfaces = !surfaces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.isEmpty
-        return !hasAppName && !hasConcept && !hasSurfaces
+        let hasNavigation = !(navigation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasDesignDirection = !(designDirection?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasOpenIssues = !(openIssues ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.isEmpty
+        return !hasAppName && !hasConcept && !hasSurfaces && !hasNavigation && !hasDesignDirection && !hasOpenIssues
     }
 
     var surfacesLine: String {
@@ -54,12 +70,23 @@ struct LatticeProjectSummary: Codable, Equatable {
             .joined(separator: " + ")
     }
 
+    var openIssuesLine: String {
+        (openIssues ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
+
     func merged(with other: LatticeProjectSummary) -> LatticeProjectSummary {
         let mergedSurfaces = other.surfaces.isEmpty ? surfaces : other.surfaces
+        let mergedOpenIssues = ((other.openIssues ?? []).isEmpty ? openIssues : other.openIssues)
         return LatticeProjectSummary(
             appName: other.appName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? other.appName : appName,
             concept: other.concept?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? other.concept : concept,
-            surfaces: mergedSurfaces
+            surfaces: mergedSurfaces,
+            navigation: other.navigation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? other.navigation : navigation,
+            designDirection: other.designDirection?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? other.designDirection : designDirection,
+            openIssues: mergedOpenIssues
         )
     }
 }
@@ -72,16 +99,29 @@ struct AssistantDirectorMetadata: Equatable {
     var appName: String?
     var appConcept: String?
     var appSurfaces: [String] = []
+    var appNavigation: String?
+    var designDirection: String?
+    var openIssues: [String] = []
 
     var isEmpty: Bool {
-        [built, changed, needsUserInput, appName, appConcept]
+        [built, changed, needsUserInput, appName, appConcept, appNavigation, designDirection]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .isEmpty && appSurfaces.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.isEmpty && phase == nil
+            .isEmpty
+            && appSurfaces.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.isEmpty
+            && openIssues.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.isEmpty
+            && phase == nil
     }
 
     var projectSummary: LatticeProjectSummary? {
-        let summary = LatticeProjectSummary(appName: appName, concept: appConcept, surfaces: appSurfaces)
+        let summary = LatticeProjectSummary(
+            appName: appName,
+            concept: appConcept,
+            surfaces: appSurfaces,
+            navigation: appNavigation,
+            designDirection: designDirection,
+            openIssues: openIssues
+        )
         return summary.isEmpty ? nil : summary
     }
 }
@@ -185,6 +225,15 @@ enum AssistantProjectFooterParser {
             if let v = match(line, pattern: #"(?i)^app\s+surfaces\s*[:：]\s*(.+)$"#) {
                 metadata.appSurfaces = splitSurfaces(v)
             }
+            if let v = match(line, pattern: #"(?i)^app\s+navigation\s*[:：]\s*(.+)$"#) {
+                metadata.appNavigation = stripTrailingPunctuation(v)
+            }
+            if let v = match(line, pattern: #"(?i)^design\s+direction\s*[:：]\s*(.+)$"#) {
+                metadata.designDirection = stripTrailingPunctuation(v)
+            }
+            if let v = match(line, pattern: #"(?i)^open\s+issues\s*[:：]\s*(.+)$"#) {
+                metadata.openIssues = splitSummaryList(v)
+            }
         }
 
         return metadata.isEmpty ? nil : metadata
@@ -219,6 +268,14 @@ enum AssistantProjectFooterParser {
 
     private static func splitSurfaces(_ raw: String) -> [String] {
         let separators = CharacterSet(charactersIn: ",|/")
+        return raw
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func splitSummaryList(_ raw: String) -> [String] {
+        let separators = CharacterSet(charactersIn: ",|/;")
         return raw
             .components(separatedBy: separators)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
