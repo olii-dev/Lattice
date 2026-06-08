@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 // MARK: - Provider types
 
@@ -17,38 +18,41 @@ enum LLMProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    var models: [(id: String, label: String)] {
+    var models: [LLMModelOption] {
         switch self {
         case .anthropic: [
-            ("claude-opus-4-7", "Claude Opus 4.7"),
-            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-            ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
-            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+            .init(id: "claude-opus-4-7", label: "Claude Opus 4.7", supportsImages: true),
+            .init(id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", supportsImages: true),
+            .init(id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5", supportsImages: true),
+            .init(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", supportsImages: true),
         ]
         case .openAI: [
-            ("gpt-5.4", "GPT-5.4"),
-            ("gpt-5.4-mini", "GPT-5.4 Mini"),
-            ("gpt-5.4-nano", "GPT-5.4 Nano"),
-            ("gpt-5.1", "GPT-5.1"),
-            ("gpt-5", "GPT-5"),
-            ("gpt-4.1", "GPT-4.1"),
-            ("gpt-4o", "GPT-4o"),
-            ("gpt-4o-mini", "GPT-4o mini"),
+            .init(id: "gpt-5.4", label: "GPT-5.4", supportsImages: true),
+            .init(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", supportsImages: true),
+            .init(id: "gpt-5.4-nano", label: "GPT-5.4 Nano", supportsImages: true),
+            .init(id: "gpt-5.1", label: "GPT-5.1", supportsImages: true),
+            .init(id: "gpt-5", label: "GPT-5", supportsImages: true),
+            .init(id: "gpt-4.1", label: "GPT-4.1", supportsImages: true),
+            .init(id: "gpt-4o", label: "GPT-4o", supportsImages: true),
+            .init(id: "gpt-4o-mini", label: "GPT-4o mini", supportsImages: true),
         ]
         case .zai: [
-            ("glm-4.7-flash", "GLM-4.7 Flash"),
-            ("glm-4.5-flash", "GLM-4.5 Flash"),
-            ("glm-4.5-air", "GLM-4.5 Air"),
-            ("glm-4.7", "GLM-4.7"),
-            ("glm-4.7-flashx", "GLM-4.7 FlashX"),
-            ("glm-4.6", "GLM-4.6"),
-            ("glm-4.5", "GLM-4.5"),
-            ("glm-4.5-x", "GLM-4.5 X"),
-            ("glm-4.5-airx", "GLM-4.5 AirX"),
-            ("glm-4-32b-0414-128k", "GLM-4 32B 128K"),
-            ("glm-5", "GLM-5"),
-            ("glm-5-turbo", "GLM-5 Turbo"),
-            ("glm-5.1", "GLM-5.1"),
+            .init(id: "glm-4.7-flash", label: "GLM-4.7 Flash", supportsImages: false),
+            .init(id: "glm-4.5-flash", label: "GLM-4.5 Flash", supportsImages: false),
+            .init(id: "glm-4.5-air", label: "GLM-4.5 Air", supportsImages: false),
+            .init(id: "glm-4.7", label: "GLM-4.7", supportsImages: false),
+            .init(id: "glm-4.7-flashx", label: "GLM-4.7 FlashX", supportsImages: false),
+            .init(id: "glm-4.6", label: "GLM-4.6", supportsImages: false),
+            .init(id: "glm-4.5", label: "GLM-4.5", supportsImages: false),
+            .init(id: "glm-4.5-x", label: "GLM-4.5 X", supportsImages: false),
+            .init(id: "glm-4.5-airx", label: "GLM-4.5 AirX", supportsImages: false),
+            .init(id: "glm-4-32b-0414-128k", label: "GLM-4 32B 128K", supportsImages: false),
+            .init(id: "glm-5", label: "GLM-5", supportsImages: false),
+            .init(id: "glm-5-turbo", label: "GLM-5 Turbo", supportsImages: false),
+            .init(id: "glm-5.1", label: "GLM-5.1", supportsImages: false),
+            .init(id: "glm-5v-turbo", label: "GLM-5V-Turbo", supportsImages: true),
+            .init(id: "glm-4.6v", label: "GLM-4.6V", supportsImages: true),
+            .init(id: "glm-4.5v", label: "GLM-4.5V", supportsImages: true),
         ]
         }
     }
@@ -64,6 +68,12 @@ enum LLMProvider: String, CaseIterable, Identifiable {
         case .zai: URL(string: "https://api.z.ai/api/paas/v4/chat/completions")!
         }
     }
+}
+
+struct LLMModelOption: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let supportsImages: Bool
 }
 
 // MARK: - Unified streaming service
@@ -215,7 +225,7 @@ struct LLMService {
                             "cache_control": ["type": "ephemeral"]
                         ]],
                         "tools": tools,
-                        "messages": messages
+                        "messages": convertToAnthropicMessages(messages)
                     ]
 
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -439,9 +449,8 @@ struct LLMService {
                 if let content = msg["content"] as? String {
                     result.append(["role": "user", "content": content])
                 } else if let content = msg["content"] as? [[String: Any]] {
-                    // Could be tool_result messages -- convert to OpenAI format
                     var toolResults: [[String: Any]] = []
-                    var textParts: [String] = []
+                    var contentBlocks: [[String: Any]] = []
 
                     for block in content {
                         let type = block["type"] as? String ?? ""
@@ -454,13 +463,23 @@ struct LLMService {
                                 "content": output
                             ])
                         } else if type == "text" {
-                            textParts.append(block["text"] as? String ?? "")
+                            contentBlocks.append([
+                                "type": "text",
+                                "text": block["text"] as? String ?? ""
+                            ])
+                        } else if type == "local_image",
+                                  let imageBlock = openAIImageContentBlock(from: block) {
+                            contentBlocks.append(imageBlock)
                         }
                     }
 
                     for tr in toolResults { result.append(tr) }
-                    if !textParts.isEmpty {
-                        result.append(["role": "user", "content": textParts.joined(separator: "\n")])
+                    if contentBlocks.count == 1,
+                       let onlyBlock = contentBlocks.first,
+                       onlyBlock["type"] as? String == "text" {
+                        result.append(["role": "user", "content": onlyBlock["text"] as? String ?? ""])
+                    } else if !contentBlocks.isEmpty {
+                        result.append(["role": "user", "content": contentBlocks])
                     }
                 }
             } else if role == "assistant" {
@@ -502,6 +521,86 @@ struct LLMService {
         }
 
         return result
+    }
+
+    private func convertToAnthropicMessages(_ messages: [[String: Any]]) -> [[String: Any]] {
+        var result: [[String: Any]] = []
+
+        for msg in messages {
+            guard let role = msg["role"] as? String else { continue }
+
+            if let content = msg["content"] as? String {
+                result.append(["role": role, "content": content])
+                continue
+            }
+
+            guard let content = msg["content"] as? [[String: Any]] else { continue }
+            var convertedBlocks: [[String: Any]] = []
+
+            for block in content {
+                let type = block["type"] as? String ?? ""
+                switch type {
+                case "text":
+                    convertedBlocks.append([
+                        "type": "text",
+                        "text": block["text"] as? String ?? ""
+                    ])
+                case "tool_use":
+                    convertedBlocks.append(block)
+                case "tool_result":
+                    convertedBlocks.append(block)
+                case "local_image":
+                    if let imageBlock = anthropicImageContentBlock(from: block) {
+                        convertedBlocks.append(imageBlock)
+                    }
+                default:
+                    continue
+                }
+            }
+
+            if !convertedBlocks.isEmpty {
+                result.append(["role": role, "content": convertedBlocks])
+            }
+        }
+
+        return result
+    }
+
+    private func openAIImageContentBlock(from block: [String: Any]) -> [String: Any]? {
+        guard let payload = encodedImagePayload(from: block) else { return nil }
+        return [
+            "type": "image_url",
+            "image_url": [
+                "url": "data:\(payload.mimeType);base64,\(payload.base64)"
+            ]
+        ]
+    }
+
+    private func anthropicImageContentBlock(from block: [String: Any]) -> [String: Any]? {
+        guard let payload = encodedImagePayload(from: block) else { return nil }
+        return [
+            "type": "image",
+            "source": [
+                "type": "base64",
+                "media_type": payload.mimeType,
+                "data": payload.base64
+            ]
+        ]
+    }
+
+    private func encodedImagePayload(from block: [String: Any]) -> (mimeType: String, base64: String)? {
+        guard let path = block["path"] as? String else { return nil }
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+
+        let explicitMime = (block["mime_type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let inferredMime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+        let mimeType = explicitMime?.isEmpty == false
+            ? explicitMime!
+            : (inferredMime ?? "image/png")
+
+        return (mimeType, data.base64EncodedString())
     }
 
     // MARK: - System prompt

@@ -8,8 +8,13 @@ struct LatticeChatRestorePoint: Codable, Identifiable, Equatable {
     let userLine: String
     /// Full user message text for this checkpoint (used to prefill the composer on restore).
     let userText: String?
+    /// Git snapshot captured before the turn started, used to rewind that turn.
+    let preTurnGitOID: String?
+    /// Stable transcript anchor for the assistant turn this checkpoint belongs to.
+    let assistantTurnAnchorId: UUID?
     /// From `git stash create --include-untracked` or `HEAD`; used with `reset --hard` + `clean -fd`.
     let gitTreeOID: String?
+    let projectSummary: LatticeProjectSummary?
     let itemsPayload: Data
     let historyPayload: Data
 }
@@ -20,6 +25,8 @@ struct LatticeChatRestorePointHeader: Identifiable, Equatable {
     let createdAt: Date
     let userLine: String
     let userText: String?
+    let assistantTurnAnchorId: UUID?
+    let canRewind: Bool
 }
 
 enum LatticeChatRestoreHistory {
@@ -30,17 +37,51 @@ enum LatticeChatRestoreHistory {
         keyPrefix + projectFingerprint
     }
 
+    private static func restorePointsDirectoryURL() -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return base
+            .appendingPathComponent("Lattice", isDirectory: true)
+            .appendingPathComponent("ChatRestorePoints", isDirectory: true)
+    }
+
+    private static func restorePointsFileURL(projectFingerprint: String) -> URL? {
+        restorePointsDirectoryURL()?
+            .appendingPathComponent("\(projectFingerprint).json", isDirectory: false)
+    }
+
     static func loadAll(projectPath: String) -> [LatticeChatRestorePoint] {
         let fp = ChatSessionPersistence.projectStorageFingerprint(path: projectPath)
-        guard let data = UserDefaults.standard.data(forKey: storageKey(projectFingerprint: fp)),
-              let decoded = try? JSONDecoder().decode([LatticeChatRestorePoint].self, from: data)
-        else { return [] }
-        return decoded
+        if let fileURL = restorePointsFileURL(projectFingerprint: fp),
+           let data = try? Data(contentsOf: fileURL),
+           let decoded = try? JSONDecoder().decode([LatticeChatRestorePoint].self, from: data) {
+            return decoded
+        }
+
+        // One-time migration from the older UserDefaults-backed restore history.
+        if let data = UserDefaults.standard.data(forKey: storageKey(projectFingerprint: fp)),
+           let decoded = try? JSONDecoder().decode([LatticeChatRestorePoint].self, from: data) {
+            save(decoded, projectFingerprint: fp)
+            UserDefaults.standard.removeObject(forKey: storageKey(projectFingerprint: fp))
+            return decoded
+        }
+
+        return []
     }
 
     private static func save(_ points: [LatticeChatRestorePoint], projectFingerprint: String) {
-        guard let data = try? JSONEncoder().encode(points) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey(projectFingerprint: projectFingerprint))
+        UserDefaults.standard.removeObject(forKey: storageKey(projectFingerprint: projectFingerprint))
+
+        guard let fileURL = restorePointsFileURL(projectFingerprint: projectFingerprint) else { return }
+        if points.isEmpty {
+            try? FileManager.default.removeItem(at: fileURL)
+            return
+        }
+        guard let directoryURL = restorePointsDirectoryURL(),
+              let data = try? JSONEncoder().encode(points) else { return }
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try? data.write(to: fileURL, options: .atomic)
     }
 
     /// Record state after a fully finished agent burst (transcript matches repo snapshot).
@@ -48,7 +89,10 @@ enum LatticeChatRestoreHistory {
         projectPath: String,
         userLine: String,
         userText: String?,
+        preTurnGitOID: String?,
+        assistantTurnAnchorId: UUID?,
         gitTreeOID: String?,
+        projectSummary: LatticeProjectSummary?,
         items: [ChatItem],
         conversationHistory: [[String: Any]]
     ) {
@@ -68,7 +112,10 @@ enum LatticeChatRestoreHistory {
             createdAt: Date(),
             userLine: label,
             userText: userText?.trimmingCharacters(in: .whitespacesAndNewlines),
+            preTurnGitOID: preTurnGitOID?.trimmingCharacters(in: .whitespacesAndNewlines),
+            assistantTurnAnchorId: assistantTurnAnchorId,
             gitTreeOID: (oid?.isEmpty == false) ? oid : nil,
+            projectSummary: projectSummary?.isEmpty == true ? nil : projectSummary,
             itemsPayload: itemsData,
             historyPayload: histData
         )
@@ -83,6 +130,7 @@ enum LatticeChatRestoreHistory {
         let root = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty else { return }
         let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+        save([], projectFingerprint: fp)
         UserDefaults.standard.removeObject(forKey: storageKey(projectFingerprint: fp))
     }
 
@@ -97,10 +145,10 @@ enum LatticeChatRestoreHistory {
         save(points, projectFingerprint: fp)
     }
 
-    static func decode(_ point: LatticeChatRestorePoint) -> (items: [ChatItem], history: [[String: Any]])? {
+    static func decode(_ point: LatticeChatRestorePoint) -> (items: [ChatItem], history: [[String: Any]], projectSummary: LatticeProjectSummary?)? {
         guard let items = ChatSessionPersistence.decodeItemsSnapshot(point.itemsPayload),
               let history = ChatSessionPersistence.decodeHistorySnapshot(point.historyPayload)
         else { return nil }
-        return (items, history)
+        return (items, history, point.projectSummary)
     }
 }

@@ -82,6 +82,29 @@ struct BuildInfo: Sendable {
     var simulatorID: String?
 }
 
+struct LatticeImageAttachment: Identifiable, Equatable, Codable {
+    let id: UUID
+    let path: String
+    let fileName: String
+    let mimeType: String
+
+    init(id: UUID = UUID(), path: String, fileName: String, mimeType: String) {
+        self.id = id
+        self.path = path
+        self.fileName = fileName
+        self.mimeType = mimeType
+    }
+
+    nonisolated init?(url: URL) {
+        guard url.isFileURL else { return nil }
+        let path = url.path
+        guard !path.isEmpty else { return nil }
+        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/png"
+        guard mimeType.hasPrefix("image/") else { return nil }
+        self.init(path: path, fileName: url.lastPathComponent, mimeType: mimeType)
+    }
+}
+
 struct ChatContext: Equatable {
     let runTarget: String?
     let projectPath: String?
@@ -442,8 +465,18 @@ final class ChatViewModel: ObservableObject {
             chatRestorePointHeaders = []
             return
         }
-        chatRestorePointHeaders = LatticeChatRestoreHistory.loadAll(projectPath: root).map {
-            LatticeChatRestorePointHeader(id: $0.id, createdAt: $0.createdAt, userLine: $0.userLine, userText: $0.userText)
+        let points = LatticeChatRestoreHistory.loadAll(projectPath: root)
+        chatRestorePointHeaders = points.enumerated().map { index, point in
+            let hasRestoreRevision = nonEmptyTrimmed(point.preTurnGitOID) != nil
+                || (index > 0 && nonEmptyTrimmed(points[index - 1].gitTreeOID) != nil)
+            return LatticeChatRestorePointHeader(
+                id: point.id,
+                createdAt: point.createdAt,
+                userLine: point.userLine,
+                userText: point.userText,
+                assistantTurnAnchorId: point.assistantTurnAnchorId,
+                canRewind: point.assistantTurnAnchorId != nil && hasRestoreRevision
+            )
         }
     }
 
@@ -467,10 +500,12 @@ final class ChatViewModel: ObservableObject {
            let decoded = LatticeChatRestoreHistory.decode(chatPoint) {
             items = decoded.items
             conversationHistory = decoded.history
+            projectSummary = decoded.projectSummary
         } else if let decodedSelected = LatticeChatRestoreHistory.decode(selectedPoint) {
             // Never blank the whole transcript on restore fallback; prefer selected checkpoint snapshot.
             items = decodedSelected.items
             conversationHistory = decodedSelected.history
+            projectSummary = decodedSelected.projectSummary
         }
         pendingRetry = nil
         clearPendingInspectorHints()
@@ -479,6 +514,46 @@ final class ChatViewModel: ObservableObject {
         burstKeepHistoryPrefixCount = conversationHistory.count
         refreshBurstGitStartFromBaseline()
         LatticeChatRestoreHistory.removeRestorePointAndNewer(projectPath: root, pointId: selectedPointId)
+        reloadChatRestorePointHeaders()
+        persistSession()
+    }
+
+    func rewindCompletedTurn(checkpointId: UUID) {
+        guard !isRunning else { return }
+        let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else { return }
+        let points = LatticeChatRestoreHistory.loadAll(projectPath: root)
+        guard let selectedIndex = points.firstIndex(where: { $0.id == checkpointId }) else { return }
+
+        let selectedPoint = points[selectedIndex]
+        let previousPoint = selectedIndex > 0 ? points[selectedIndex - 1] : nil
+
+        guard let restoreRevision = nonEmptyTrimmed(selectedPoint.preTurnGitOID)
+            ?? nonEmptyTrimmed(previousPoint?.gitTreeOID) else {
+            return
+        }
+
+        LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: restoreRevision)
+        let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
+        LatticeGitWorkspaceCheckpoint.persistRetryBaseline(projectFingerprint: fp, oid: restoreRevision)
+
+        if let previousPoint, let decoded = LatticeChatRestoreHistory.decode(previousPoint) {
+            items = decoded.items
+            conversationHistory = decoded.history
+            projectSummary = decoded.projectSummary
+        } else {
+            items = []
+            conversationHistory = []
+            projectSummary = nil
+        }
+
+        pendingRetry = nil
+        clearPendingInspectorHints()
+        burstFileUndos.removeAll()
+        burstKeepItemsPrefixCount = items.count
+        burstKeepHistoryPrefixCount = conversationHistory.count
+        refreshBurstGitStartFromBaseline()
+        LatticeChatRestoreHistory.removeRestorePointAndNewer(projectPath: root, pointId: checkpointId)
         reloadChatRestorePointHeaders()
         persistSession()
     }
@@ -692,13 +767,19 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    func send(_ text: String, apiKey: String, context: ChatContext, showUserBubble: Bool = true) {
-        guard !text.isEmpty, !apiKey.isEmpty else { return }
+    func send(
+        _ text: String,
+        attachments: [LatticeImageAttachment] = [],
+        apiKey: String,
+        context: ChatContext,
+        showUserBubble: Bool = true
+    ) {
+        guard !text.isEmpty || !attachments.isEmpty, !apiKey.isEmpty else { return }
         if isRunning, showUserBubble { return }
 
         if showUserBubble {
             pendingRetry = nil
-            items.append(ChatItem(kind: .user(text)))
+            items.append(ChatItem(kind: .user(displayUserBubbleText(for: text, attachments: attachments))))
             if !scopedProjectPath.isEmpty {
                 consoleStore?.beginSession(
                     title: "Agent pass",
@@ -708,14 +789,14 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
-        let outbound = outboundUserContent(forAPI: text)
+        let outbound = outboundUserContent(forAPI: text, attachments: attachments, context: context)
 
         guard !isRunning else { return }
 
         isRunning = true
         livePhase = .idea
         compactionRunForThisAgentBurst = false
-        conversationHistory.append(["role": "user", "content": contextualizedMessage(outbound, context: context)])
+        conversationHistory.append(["role": "user", "content": outbound])
         if showUserBubble {
             burstKeepItemsPrefixCount = items.count
             burstKeepHistoryPrefixCount = conversationHistory.count
@@ -734,7 +815,41 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// First user message for this project (once per folder): ask the model to verify the local dev environment via bash.
-    private func outboundUserContent(forAPI text: String) -> String {
+    private func outboundUserContent(
+        forAPI text: String,
+        attachments: [LatticeImageAttachment],
+        context: ChatContext
+    ) -> Any {
+        let baseText = outboundUserTextForAPI(text)
+        let effectiveText: String
+        if !baseText.isEmpty {
+            effectiveText = baseText
+        } else if !attachments.isEmpty {
+            let noun = attachments.count == 1 ? "image" : "images"
+            effectiveText = "The user attached \(attachments.count) \(noun) without any additional text. Inspect the attached \(noun) and help based on them."
+        } else {
+            effectiveText = ""
+        }
+
+        let contextualized = contextualizedMessage(effectiveText, context: context)
+        guard !attachments.isEmpty else { return contextualized }
+
+        var blocks: [[String: Any]] = [[
+            "type": "text",
+            "text": contextualized
+        ]]
+        for attachment in attachments {
+            blocks.append([
+                "type": "local_image",
+                "path": attachment.path,
+                "mime_type": attachment.mimeType,
+                "file_name": attachment.fileName
+            ])
+        }
+        return blocks
+    }
+
+    private func outboundUserTextForAPI(_ text: String) -> String {
         guard !scopedProjectPath.isEmpty else { return text }
         guard !ChatSessionPersistence.didCompleteEnvironmentIntro(projectPath: scopedProjectPath) else { return text }
         ChatSessionPersistence.markEnvironmentIntroCompleted(projectPath: scopedProjectPath)
@@ -783,6 +898,19 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
             }
         }
         return ""
+    }
+
+    private static func assistantTurnAnchorIdForLatestCompletedBurst(from items: [ChatItem], startingAt startIndex: Int) -> UUID? {
+        guard startIndex >= 0, startIndex < items.count else { return nil }
+        for item in items[startIndex...] {
+            switch item.kind {
+            case .assistant, .tool, .reasoning:
+                return item.id
+            case .user, .working:
+                continue
+            }
+        }
+        return nil
     }
 
     // MARK: - Agentic loop
@@ -1037,7 +1165,13 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
                 projectPath: root,
                 userLine: Self.lastUserTextForHistoryRestore(from: items),
                 userText: Self.lastUserTextForHistoryRestore(from: items),
+                preTurnGitOID: burstGitStartOID,
+                assistantTurnAnchorId: Self.assistantTurnAnchorIdForLatestCompletedBurst(
+                    from: items,
+                    startingAt: burstKeepItemsPrefixCount
+                ),
                 gitTreeOID: snap,
+                projectSummary: projectSummary,
                 items: items,
                 conversationHistory: conversationHistory
             )
@@ -1054,6 +1188,22 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         [User Message]
         \(text)
         """
+    }
+
+    private func displayUserBubbleText(for text: String, attachments: [LatticeImageAttachment]) -> String {
+        guard !attachments.isEmpty else { return text }
+        let names = attachments.prefix(3).map(\.fileName)
+        let overflow = attachments.count > names.count ? " +\(attachments.count - names.count) more" : ""
+        let attachmentLine: String
+        if attachments.count == 1, let first = names.first {
+            attachmentLine = "Attached image: \(first)"
+        } else {
+            attachmentLine = "Attached \(attachments.count) images: \(names.joined(separator: ", "))\(overflow)"
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return attachmentLine }
+        return "\(text)\n\n\(attachmentLine)"
     }
 
     // Pretty-print tool input for display
@@ -1240,6 +1390,7 @@ struct ContentView: View {
     @State private var composerHeight: CGFloat = 42
     @State private var showProjectPanel = false
     @State private var showProjectHub = false
+    @State private var composerImageAttachments: [LatticeImageAttachment] = []
     @State private var isDirectRunInProgress = false
     @State private var composerTipIndex = 0
     @State private var directRunBanner: String?
@@ -1276,6 +1427,41 @@ struct ContentView: View {
         case .openAI: return openAIKey
         case .zai: return zaiKey
         }
+    }
+
+    private var selectedProviderOption: LLMProvider {
+        LLMProvider(rawValue: selectedProvider) ?? .anthropic
+    }
+
+    private var selectedModelSupportsImages: Bool {
+        selectedProviderOption.models.first(where: { $0.id == selectedModel })?.supportsImages ?? false
+    }
+
+    private func assistantTurnRestoreActions(for rows: [ChatDisplayRow]) -> [UUID: (checkpointId: UUID, prompt: String)] {
+        let failedRowId = viewModel.pendingRetry?.errorItemId
+        let checkpointsByAnchor: [UUID: (checkpointId: UUID, prompt: String)] = Dictionary(
+            uniqueKeysWithValues: viewModel.chatRestorePointHeaders.compactMap { checkpoint in
+                guard checkpoint.canRewind,
+                      let anchorId = checkpoint.assistantTurnAnchorId else { return nil }
+                return (
+                    anchorId,
+                    (
+                        checkpointId: checkpoint.id,
+                        prompt: checkpoint.userText ?? checkpoint.userLine
+                    )
+                )
+            }
+        )
+
+        var result: [UUID: (checkpointId: UUID, prompt: String)] = [:]
+        for row in rows {
+            guard case .assistantTurn(let anchorId, let items) = row else { continue }
+            guard anchorId != failedRowId, assistantTurnIsComplete(items) else { continue }
+            if let checkpoint = checkpointsByAnchor[anchorId] {
+                result[anchorId] = checkpoint
+            }
+        }
+        return result
     }
 
     private var localRunDestination: LatticeLocalRunDestination {
@@ -1565,7 +1751,14 @@ struct ContentView: View {
                 if hasSelectedProject, showConsoleSheet, !showProjectHub {
                     consoleDock
                         .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.985, anchor: .bottom)),
+                                    removal: .move(edge: .bottom).combined(with: .opacity)
+                                )
+                        )
                 }
                 inputBar
             }
@@ -1751,7 +1944,10 @@ struct ContentView: View {
                     .transition(
                         reduceMotion
                             ? .opacity
-                            : .asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity)
+                            : .asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .bottom)).combined(with: .scale(scale: 0.985)),
+                                removal: .opacity
+                            )
                     )
                 }
             }
@@ -1842,6 +2038,11 @@ struct ContentView: View {
         }
         .onChange(of: latticeBundleIdentifierOverride) { _, _ in
             persistBundleIdentifierOverrideForSelectedProject()
+        }
+        .onChange(of: selectedModelSupportsImages) { _, supportsImages in
+            if !supportsImages {
+                composerImageAttachments.removeAll()
+            }
         }
         .onChange(of: viewModel.projectSummary) { _, _ in
             applyGeneratedSummaryIconIfPossible()
@@ -2012,25 +2213,62 @@ struct ContentView: View {
 
         let projectRoot = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        return ScrollView(.horizontal, showsIndicators: false) {
+        return HStack(spacing: 0) {
+            Spacer(minLength: 0)
+
             HStack(alignment: .center, spacing: 10) {
+                Spacer(minLength: 0)
+
                 contextProjectTitle(
                     folderShort: folderShort,
                     path: projectRoot,
                     providerLabel: prov.displayName,
                     modelLabel: modelLabel
                 )
-                .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
+
+                workspaceDivider
 
                 contextRunPill(icon: simIcon, title: "Run target", value: simLabel)
-                    .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
 
                 if let summary = viewModel.projectSummary, !summary.isEmpty {
+                    workspaceDivider
                     ProjectSummaryStrip(summary: summary, projectPath: selectedProjectPath, compact: true)
-                        .modifier(LatticeElevatedCardModifier(radius: 16, strokeOpacity: 0.08, shadowOpacity: 0.04))
                 }
+
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 1180)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.primary.opacity(0.045),
+                                Color.primary.opacity(0.018)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.05), radius: 10, y: 2)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var workspaceDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.07))
+            .frame(width: 1, height: 34)
+            .padding(.vertical, 2)
     }
 
     private func contextProjectTitle(folderShort: String, path: String, providerLabel: String, modelLabel: String) -> some View {
@@ -2074,8 +2312,6 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
         .contextMenu {
             Button("Reveal in Finder") {
                 guard exists else { return }
@@ -2103,31 +2339,65 @@ struct ContentView: View {
             }
             .frame(maxWidth: 200, alignment: .leading)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 
     // MARK: - Message list
 
     private var transcriptEmptyPlaceholder: some View {
-        VStack(alignment: .center, spacing: 10) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 28))
-                .foregroundStyle(.tertiary)
-                .symbolRenderingMode(.hierarchical)
-            Text("No build requests yet")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Text("Describe the app, screen, or improvement you want to build. If you expected history here, confirm the correct folder is selected in the toolbar or Project sidebar.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+        VStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+                    .frame(width: 72, height: 72)
+                Image(systemName: "wand.and.stars.inverse")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(Color.accentColor.opacity(0.95))
+                    .symbolRenderingMode(.hierarchical)
+            }
+
+            VStack(spacing: 6) {
+                Text("Start the next build pass")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+
+                Text("Ask Lattice for a screen, a feature, a polish pass, or a fix. It will inspect the current project and keep building from there.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary.opacity(0.92))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            }
+
+            HStack(spacing: 8) {
+                emptyPromptChip("Build a screen")
+                emptyPromptChip("Polish the UI")
+                emptyPromptChip("Fix a build")
+            }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 42)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.primary.opacity(0.02))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
+    }
+
+    private func emptyPromptChip(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary.opacity(0.95))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(Color.primary.opacity(0.045))
+            )
     }
 
     private var messageList: some View {
@@ -2139,34 +2409,10 @@ struct ContentView: View {
                         if viewModel.items.isEmpty {
                             transcriptEmptyPlaceholder
                         }
-                        ForEach(buildChatDisplayRows(from: viewModel.items)) { row in
-                            Group {
-                                switch row {
-                                case .user(let item):
-                                    HStack(alignment: .top, spacing: 0) {
-                                        Spacer(minLength: 0)
-                                        ChatItemView(item: item)
-                                    }
-                                    .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
-                                    .frame(maxWidth: .infinity, alignment: .trailing)
-                                case .working(let item):
-                                    TransientWorkingRow(item: item, phase: viewModel.livePhase)
-                                        .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                case .assistantTurn(_, let items):
-                                    AssistantTurnCard(
-                                        items: items,
-                                        livePhase: viewModel.livePhase,
-                                        reduceMotion: reduceMotion,
-                                        pendingRetry: viewModel.pendingRetry,
-                                        onRetry: {
-                                            viewModel.performRetry(apiKey: activeAPIKey, context: chatContext)
-                                        }
-                                    )
-                                        .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
+                        let rows = buildChatDisplayRows(from: viewModel.items)
+                        let restoreActionsByRowId = assistantTurnRestoreActions(for: rows)
+                        ForEach(rows) { row in
+                            transcriptRowView(row, restoreActionsByRowId: restoreActionsByRowId)
                             .id(row.id)
                         }
                     }
@@ -2180,7 +2426,11 @@ struct ContentView: View {
                 if let banner = directRunBanner {
                     directRunBannerView(banner)
                         .padding(.top, 10)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.985, anchor: .top))
+                        )
                 }
             }
             .onChange(of: viewModel.transcriptScrollToBottomToken) { _, _ in
@@ -2190,6 +2440,48 @@ struct ContentView: View {
                 scrollTranscriptToBottom(using: proxy)
             }
             .textSelection(.disabled)
+        }
+    }
+
+    @ViewBuilder
+    private func transcriptRowView(
+        _ row: ChatDisplayRow,
+        restoreActionsByRowId: [UUID: (checkpointId: UUID, prompt: String)]
+    ) -> some View {
+        switch row {
+        case .user(let item):
+            HStack(alignment: .top, spacing: 0) {
+                Spacer(minLength: 0)
+                ChatItemView(item: item)
+            }
+            .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+
+        case .working(let item):
+            TransientWorkingRow(item: item, phase: viewModel.livePhase)
+                .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .assistantTurn(let anchorId, let items):
+            let restoreAction = restoreActionsByRowId[anchorId]
+            AssistantTurnCard(
+                items: items,
+                livePhase: viewModel.livePhase,
+                reduceMotion: reduceMotion,
+                pendingRetry: viewModel.pendingRetry,
+                canRestoreLastPass: restoreAction != nil,
+                onRetry: {
+                    viewModel.performRetry(apiKey: activeAPIKey, context: chatContext)
+                },
+                onRestoreLastPass: {
+                    guard let restoreAction else { return }
+                    viewModel.rewindCompletedTurn(checkpointId: restoreAction.checkpointId)
+                    input = restoreAction.prompt
+                    composerHeight = 42
+                }
+            )
+            .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -2207,12 +2499,40 @@ struct ContentView: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if !composerImageAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(composerImageAttachments) { attachment in
+                            composerAttachmentChip(attachment)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             HStack(alignment: .center, spacing: 0) {
+                if selectedModelSupportsImages {
+                    Button(action: chooseComposerImages) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.primary.opacity(0.82))
+                            .frame(width: 34, height: 34)
+                            .background {
+                                Circle()
+                                    .fill(Color.primary.opacity(0.06))
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Attach image")
+                    .padding(.leading, 6)
+                }
+
                 ZStack(alignment: .topLeading) {
                     if input.isEmpty {
                         Text("Describe the app or feature to build…")
                             .foregroundStyle(.secondary.opacity(0.96))
-                            .padding(.leading, 12)
+                            .padding(.leading, selectedModelSupportsImages ? 8 : 12)
                             .padding(.top, 11)
                             .allowsHitTesting(false)
                     }
@@ -2230,14 +2550,14 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button(action: {
-                    if hasInputText {
+                    if hasComposerDraft {
                         sendMessage()
                     } else {
                         viewModel.stop()
                     }
                 }) {
                     Group {
-                        if viewModel.isRunning && !hasInputText {
+                        if viewModel.isRunning && !hasComposerDraft {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundStyle(canSend ? Color.white : Color.secondary)
@@ -2263,7 +2583,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
-                .help(viewModel.isRunning && !hasInputText ? "Stop Build" : "Build With Lattice")
+                .help(viewModel.isRunning && !hasComposerDraft ? "Stop Build" : "Build With Lattice")
                 .padding(.trailing, 6)
                 .padding(.vertical, 2)
             }
@@ -2289,20 +2609,76 @@ struct ContentView: View {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var hasComposerDraft: Bool {
+        hasInputText || !composerImageAttachments.isEmpty
+    }
+
     private var canSend: Bool {
         guard !activeAPIKey.isEmpty else { return false }
         if viewModel.isRunning {
-            return !hasInputText
+            return !hasComposerDraft
         }
-        return hasInputText
+        return hasComposerDraft
     }
 
     private func sendMessage() {
         guard !viewModel.isRunning else { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachments = composerImageAttachments
+        guard !text.isEmpty || !attachments.isEmpty else { return }
         input = ""
-        viewModel.send(text, apiKey: activeAPIKey, context: chatContext)
+        composerImageAttachments.removeAll()
+        viewModel.send(text, attachments: attachments, apiKey: activeAPIKey, context: chatContext)
+    }
+
+    private func chooseComposerImages() {
+        let panel = NSOpenPanel()
+        panel.title = "Attach images"
+        panel.allowedContentTypes = [.image]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.resolvesAliases = true
+
+        guard panel.runModal() == .OK else { return }
+        let existingPaths = Set(composerImageAttachments.map(\.path))
+        let picked = panel.urls.compactMap(LatticeImageAttachment.init(url:))
+            .filter { !existingPaths.contains($0.path) }
+        guard !picked.isEmpty else { return }
+        composerImageAttachments.append(contentsOf: picked)
+    }
+
+    @ViewBuilder
+    private func composerAttachmentChip(_ attachment: LatticeImageAttachment) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(attachment.fileName)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Button {
+                composerImageAttachments.removeAll { $0.id == attachment.id }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        )
     }
 
     private func copyTextAndToast(_ text: String, toast: String) {
@@ -3318,6 +3694,28 @@ private func assistantTurnPieces(from items: [ChatItem]) -> [AssistantTurnPiece]
     return pieces
 }
 
+private func assistantTurnIsComplete(_ items: [ChatItem]) -> Bool {
+    for item in items {
+        switch item.kind {
+        case .assistant(_, let streaming):
+            if streaming { return false }
+        case .reasoning(_, let streaming):
+            if streaming { return false }
+        case .tool(_, _, _, _, let running):
+            if running { return false }
+        default:
+            break
+        }
+    }
+    return true
+}
+
+private func nonEmptyTrimmed(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
 /// One-line subtitle for a tool row (paths → filenames, long bash → clipped).
 private func latticeFriendlyToolSubtitle(name: String, input: String) -> String {
     let t = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3671,7 +4069,9 @@ private struct AssistantTurnCard: View {
     var livePhase: LatticeDirectorPhase?
     var reduceMotion: Bool = false
     var pendingRetry: PendingRetryState?
+    var canRestoreLastPass: Bool = false
     var onRetry: () -> Void
+    var onRestoreLastPass: () -> Void
 
     @State private var workCollapsed = true
 
@@ -3867,6 +4267,15 @@ private struct AssistantTurnCard: View {
                         .controlSize(.small)
                         .padding(.top, 8)
                     }
+                    if canRestoreLastPass, isTurnComplete {
+                        Button(action: onRestoreLastPass) {
+                            Label("Rewind this pass", systemImage: "arrow.uturn.backward.circle")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.top, showsRetry ? 6 : 8)
+                    }
                     if hasWorkDetails {
                         workDisclosureRow
                             .padding(.top, (isTurnComplete && hasOutcomeFooter) || showsRetry ? 10 : 8)
@@ -3973,32 +4382,115 @@ private struct ToolActivityTimelineView: View {
     let tools: [ChatItem]
     var reduceMotion: Bool = false
     @State private var expandedOutputStepId: UUID?
+    @State private var expandedGroupId: UUID?
+
+    private enum DisplayRow: Identifiable {
+        case step(ChatItem)
+        case grouped(id: UUID, name: String, items: [ChatItem])
+
+        var id: UUID {
+            switch self {
+            case .step(let item):
+                return item.id
+            case .grouped(let id, _, _):
+                return id
+            }
+        }
+    }
 
     private var expandAnimation: Animation {
         reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.32, dampingFraction: 0.9)
     }
 
+    private var displayRows: [DisplayRow] {
+        var rows: [DisplayRow] = []
+        var index = 0
+
+        while index < tools.count {
+            guard case .tool(let name, _, _, _, _) = tools[index].kind else {
+                rows.append(.step(tools[index]))
+                index += 1
+                continue
+            }
+
+            if name == "read_file" || name == "write_file" {
+                var group = [tools[index]]
+                var nextIndex = index + 1
+                while nextIndex < tools.count {
+                    guard case .tool(let nextName, _, _, _, _) = tools[nextIndex].kind, nextName == name else {
+                        break
+                    }
+                    group.append(tools[nextIndex])
+                    nextIndex += 1
+                }
+
+                if group.count >= 2 {
+                    rows.append(.grouped(id: group[0].id, name: name, items: group))
+                    index = nextIndex
+                    continue
+                }
+            }
+
+            rows.append(.step(tools[index]))
+            index += 1
+        }
+
+        return rows
+    }
+
     var body: some View {
         let timeline = VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(tools.enumerated()), id: \.element.id) { index, t in
-                if case .tool(let name, let input, let output, let isError, let isRunning) = t.kind {
-                    ToolTimelineStepRow(
+            ForEach(Array(displayRows.enumerated()), id: \.element.id) { index, row in
+                switch row {
+                case .step(let t):
+                    if case .tool(let name, let input, let output, let isError, let isRunning) = t.kind {
+                        ToolTimelineStepRow(
+                            isFirst: index == 0,
+                            isLast: index == displayRows.count - 1,
+                            stableId: t.id,
+                            name: name,
+                            input: input,
+                            output: output,
+                            isError: isError,
+                            isRunning: isRunning,
+                            reduceMotion: reduceMotion,
+                            outputExpanded: expandedOutputStepId == t.id,
+                            onToggleOutput: {
+                                if reduceMotion {
+                                    expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                                } else {
+                                    withAnimation(expandAnimation) {
+                                        expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                                    }
+                                }
+                            }
+                        )
+                    }
+                case .grouped(let id, let name, let items):
+                    ToolTimelineGroupRow(
                         isFirst: index == 0,
-                        isLast: index == tools.count - 1,
-                        stableId: t.id,
+                        isLast: index == displayRows.count - 1,
+                        stableId: id,
                         name: name,
-                        input: input,
-                        output: output,
-                        isError: isError,
-                        isRunning: isRunning,
+                        items: items,
                         reduceMotion: reduceMotion,
-                        outputExpanded: expandedOutputStepId == t.id,
-                        onToggleOutput: {
+                        isExpanded: expandedGroupId == id,
+                        expandedOutputStepId: expandedOutputStepId,
+                        onToggleGroup: {
                             if reduceMotion {
-                                expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                                expandedGroupId = expandedGroupId == id ? nil : id
                             } else {
                                 withAnimation(expandAnimation) {
-                                    expandedOutputStepId = expandedOutputStepId == t.id ? nil : t.id
+                                    expandedGroupId = expandedGroupId == id ? nil : id
+                                }
+                            }
+                        },
+                        onToggleOutput: { stepId in
+                            if reduceMotion {
+                                expandedOutputStepId = expandedOutputStepId == stepId ? nil : stepId
+                            } else {
+                                withAnimation(expandAnimation) {
+                                    expandedOutputStepId = expandedOutputStepId == stepId ? nil : stepId
                                 }
                             }
                         }
@@ -4008,7 +4500,7 @@ private struct ToolActivityTimelineView: View {
         }
 
         Group {
-            if tools.count > 6 {
+            if displayRows.count > 6 {
                 ScrollView {
                     timeline
                 }
@@ -4017,6 +4509,156 @@ private struct ToolActivityTimelineView: View {
                 timeline
             }
         }
+    }
+}
+
+private struct ToolTimelineGroupRow: View {
+    let isFirst: Bool
+    let isLast: Bool
+    let stableId: UUID
+    let name: String
+    let items: [ChatItem]
+    var reduceMotion: Bool = false
+    let isExpanded: Bool
+    let expandedOutputStepId: UUID?
+    let onToggleGroup: () -> Void
+    let onToggleOutput: (UUID) -> Void
+
+    private var title: String {
+        switch name {
+        case "read_file":
+            return items.count == 2 ? "Read 2 files" : "Read \(items.count) files"
+        case "write_file":
+            return items.count == 2 ? "Updated 2 files" : "Updated \(items.count) files"
+        default:
+            return "\(items.count) steps"
+        }
+    }
+
+    private var subtitle: String {
+        let names = items.compactMap { item -> String? in
+            guard case .tool(_, let input, _, _, _) = item.kind else { return nil }
+            let summary = latticeFriendlyToolSubtitle(name: name, input: input)
+            return summary.isEmpty ? nil : summary
+        }
+        let unique = Array(NSOrderedSet(array: names)) as? [String] ?? names
+        if unique.count <= 3 {
+            return unique.joined(separator: ", ")
+        }
+        let head = unique.prefix(3).joined(separator: ", ")
+        return "\(head) +\(unique.count - 3) more"
+    }
+
+    private var containsRunningStep: Bool {
+        items.contains {
+            if case .tool(_, _, _, _, let isRunning) = $0.kind { return isRunning }
+            return false
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                if !isFirst {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.22))
+                        .frame(width: 2, height: 8)
+                }
+                ZStack {
+                    Circle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 16, height: 16)
+                    Image(systemName: name == "read_file" ? "doc.text" : "square.and.pencil")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(0.9))
+                }
+                .frame(width: 18, height: 16)
+                if !isLast {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.22))
+                        .frame(width: 2)
+                        .frame(minHeight: 18)
+                }
+            }
+            .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Button(action: onToggleGroup) {
+                    HStack(spacing: 8) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary.opacity(0.88))
+                            .frame(width: 10)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(title)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.primary.opacity(0.94))
+                                if containsRunningStep {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                }
+                            }
+                            if !subtitle.isEmpty {
+                                Text(subtitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary.opacity(0.82))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    Divider()
+                        .opacity(0.3)
+                        .padding(.leading, 8)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            if case .tool(let itemName, let input, let output, let isError, let isRunning) = item.kind {
+                                ToolTimelineStepRow(
+                                    isFirst: index == 0,
+                                    isLast: index == items.count - 1,
+                                    stableId: item.id,
+                                    name: itemName,
+                                    input: input,
+                                    output: output,
+                                    isError: isError,
+                                    isRunning: isRunning,
+                                    reduceMotion: reduceMotion,
+                                    outputExpanded: expandedOutputStepId == item.id,
+                                    onToggleOutput: {
+                                        onToggleOutput(item.id)
+                                    }
+                                )
+                                .padding(.leading, 12)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 2)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    ))
+                }
+            }
+            .background(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.05))
+                    .frame(height: 1)
+                    .padding(.leading, 8)
+            }
+        }
+        .padding(.vertical, 2)
+        .id(stableId)
     }
 }
 
@@ -4961,5 +5603,3 @@ struct ContentView_Previews: PreviewProvider {
         )
     }
 }
-
-
