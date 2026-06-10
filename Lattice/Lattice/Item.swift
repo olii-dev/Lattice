@@ -17,7 +17,7 @@ struct ChatItem: Identifiable {
     }
 
     enum Kind {
-        case user(String)
+        case user(String, attachments: [LatticeImageAttachment])
         case assistant(String, isStreaming: Bool)
         /// Provider “reasoning” / thinking stream (shown collapsed in transcript).
         case reasoning(String, isStreaming: Bool)
@@ -65,6 +65,7 @@ private struct PersistedChatItem: Codable {
     let id: UUID
     let kind: Kind
     let userText: String?
+    let userAttachments: [LatticeImageAttachment]?
     let assistantText: String?
     let reasoningText: String?
     let toolName: String?
@@ -75,9 +76,10 @@ private struct PersistedChatItem: Codable {
     init(chatItem: ChatItem) {
         self.id = chatItem.id
         switch chatItem.kind {
-        case .user(let text):
+        case .user(let text, let attachments):
             kind = .user
             userText = text
+            userAttachments = attachments
             assistantText = nil
             reasoningText = nil
             toolName = nil
@@ -87,6 +89,7 @@ private struct PersistedChatItem: Codable {
         case .assistant(let text, _):
             kind = .assistant
             userText = nil
+            userAttachments = nil
             assistantText = text
             reasoningText = nil
             toolName = nil
@@ -96,6 +99,7 @@ private struct PersistedChatItem: Codable {
         case .reasoning(let text, _):
             kind = .reasoning
             userText = nil
+            userAttachments = nil
             assistantText = nil
             reasoningText = text
             toolName = nil
@@ -105,6 +109,7 @@ private struct PersistedChatItem: Codable {
         case .tool(let name, let input, let output, let isError, _):
             kind = .tool
             userText = nil
+            userAttachments = nil
             assistantText = nil
             reasoningText = nil
             toolName = name
@@ -119,7 +124,7 @@ private struct PersistedChatItem: Codable {
     func toChatItem() -> ChatItem {
         switch kind {
         case .user:
-            return ChatItem(id: id, kind: .user(userText ?? ""))
+            return ChatItem(id: id, kind: .user(userText ?? "", attachments: userAttachments ?? []))
         case .assistant:
             return ChatItem(id: id, kind: .assistant(assistantText ?? "", isStreaming: false))
         case .reasoning:

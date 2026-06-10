@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreServices
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,6 +11,12 @@ private let latticeTranscriptColumnMaxWidth: CGFloat = 660
 private let latticeUserBubbleMaxWidth: CGFloat = 348
 /// Assistant markdown reads best a bit narrower than the full column.
 private let latticeAssistantProseMaxWidth: CGFloat = 520
+private let latticeAttachmentTileWidth: CGFloat = 124
+private let latticeAttachmentTileHeight: CGFloat = 88
+private let latticeComposerAttachmentWidth: CGFloat = 116
+private let latticeComposerAttachmentHeight: CGFloat = 78
+private let latticeSingleMessageAttachmentWidth: CGFloat = 228
+private let latticeSingleMessageAttachmentHeight: CGFloat = 154
 
 // MARK: - Shared UI tokens
 
@@ -88,7 +95,7 @@ struct LatticeImageAttachment: Identifiable, Equatable, Codable {
     let fileName: String
     let mimeType: String
 
-    init(id: UUID = UUID(), path: String, fileName: String, mimeType: String) {
+    nonisolated init(id: UUID = UUID(), path: String, fileName: String, mimeType: String) {
         self.id = id
         self.path = path
         self.fileName = fileName
@@ -102,6 +109,122 @@ struct LatticeImageAttachment: Identifiable, Equatable, Codable {
         let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/png"
         guard mimeType.hasPrefix("image/") else { return nil }
         self.init(path: path, fileName: url.lastPathComponent, mimeType: mimeType)
+    }
+}
+
+private extension NSImage {
+    nonisolated var latticePNGData: Data? {
+        guard let tiffData = tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    var latticePixelSize: CGSize {
+        if let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return CGSize(width: cgImage.width, height: cgImage.height)
+        }
+        return size
+    }
+
+    func latticeCropped(to normalizedRect: CGRect) -> NSImage? {
+        guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        let clamped = normalizedRect.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard clamped.width > 0.01, clamped.height > 0.01 else { return nil }
+
+        let cropRect = CGRect(
+            x: clamped.minX * width,
+            y: (1 - clamped.maxY) * height,
+            width: clamped.width * width,
+            height: clamped.height * height
+        ).integral
+
+        guard let cropped = cgImage.cropping(to: cropRect) else { return nil }
+        return NSImage(cgImage: cropped, size: NSSize(width: cropped.width, height: cropped.height))
+    }
+
+    func latticeAnnotated(with strokes: [[CGPoint]], lineWidth: CGFloat = 8) -> NSImage? {
+        guard let base = latticePNGData,
+              let bitmap = NSBitmapImageRep(data: base) else { return nil }
+
+        let output = NSImage(size: NSSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
+        output.lockFocus()
+        defer { output.unlockFocus() }
+
+        NSImage(data: base)?.draw(in: NSRect(origin: .zero, size: output.size))
+
+        let scale = min(output.size.width, output.size.height)
+        NSColor.systemPink.setStroke()
+        for stroke in strokes where stroke.count >= 2 {
+            let path = NSBezierPath()
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.lineWidth = max(2, lineWidth * scale)
+            for (index, point) in stroke.enumerated() {
+                let mapped = CGPoint(x: point.x * output.size.width, y: (1 - point.y) * output.size.height)
+                if index == 0 {
+                    path.move(to: mapped)
+                } else {
+                    path.line(to: mapped)
+                }
+            }
+            path.stroke()
+        }
+
+        return output
+    }
+}
+
+extension LatticeImageAttachment {
+    nonisolated static func fromClipboardImage(_ image: NSImage, suggestedName: String? = nil) -> LatticeImageAttachment? {
+        guard let pngData = image.latticePNGData else { return nil }
+        let fileName = (suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? "Pasted Image.png"
+        return writeTemporaryImageData(pngData, fileName: fileName, mimeType: "image/png")
+    }
+
+    nonisolated static func fromImageData(_ data: Data, suggestedName: String? = nil, mimeType: String? = nil) -> LatticeImageAttachment? {
+        let resolvedMimeType = mimeType?.lowercased() ?? "image/png"
+        if resolvedMimeType == "image/png" || resolvedMimeType == "image/jpeg" || resolvedMimeType == "image/jpg" {
+            let fileName = (suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+                ?? defaultFileName(forMimeType: resolvedMimeType)
+            return writeTemporaryImageData(data, fileName: fileName, mimeType: resolvedMimeType == "image/jpg" ? "image/jpeg" : resolvedMimeType)
+        }
+
+        guard let image = NSImage(data: data) else { return nil }
+        return fromClipboardImage(image, suggestedName: suggestedName)
+    }
+
+    nonisolated static func fromEditedImage(_ image: NSImage, originalName: String) -> LatticeImageAttachment? {
+        guard let pngData = image.latticePNGData else { return nil }
+        let stem = URL(fileURLWithPath: originalName).deletingPathExtension().lastPathComponent
+        let fileName = stem.isEmpty ? "Edited Image.png" : "\(stem)-edited.png"
+        return writeTemporaryImageData(pngData, fileName: fileName, mimeType: "image/png")
+    }
+
+    private nonisolated static func writeTemporaryImageData(_ data: Data, fileName: String, mimeType: String) -> LatticeImageAttachment? {
+        let sanitizedName = fileName.replacingOccurrences(of: "/", with: "-")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lattice-image-attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let target = folder.appendingPathComponent("\(UUID().uuidString)-\(sanitizedName)")
+        do {
+            try data.write(to: target, options: .atomic)
+            return LatticeImageAttachment(path: target.path, fileName: sanitizedName, mimeType: mimeType)
+        } catch {
+            return nil
+        }
+    }
+
+    private nonisolated static func defaultFileName(forMimeType mimeType: String) -> String {
+        let ext: String
+        switch mimeType {
+        case "image/jpeg": ext = "jpg"
+        case "image/gif": ext = "gif"
+        case "image/webp": ext = "webp"
+        default: ext = "png"
+        }
+        return "Pasted Image.\(ext)"
     }
 }
 
@@ -779,7 +902,7 @@ final class ChatViewModel: ObservableObject {
 
         if showUserBubble {
             pendingRetry = nil
-            items.append(ChatItem(kind: .user(displayUserBubbleText(for: text, attachments: attachments))))
+            items.append(ChatItem(kind: .user(text, attachments: attachments)))
             if !scopedProjectPath.isEmpty {
                 consoleStore?.beginSession(
                     title: "Agent pass",
@@ -893,7 +1016,7 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
 
     private static func lastUserTextForHistoryRestore(from items: [ChatItem]) -> String {
         for item in items.reversed() {
-            if case .user(let text) = item.kind {
+            if case .user(let text, _) = item.kind {
                 return text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -1190,22 +1313,6 @@ Summarize what works on this Mac and list clearly what the user must fix manuall
         """
     }
 
-    private func displayUserBubbleText(for text: String, attachments: [LatticeImageAttachment]) -> String {
-        guard !attachments.isEmpty else { return text }
-        let names = attachments.prefix(3).map(\.fileName)
-        let overflow = attachments.count > names.count ? " +\(attachments.count - names.count) more" : ""
-        let attachmentLine: String
-        if attachments.count == 1, let first = names.first {
-            attachmentLine = "Attached image: \(first)"
-        } else {
-            attachmentLine = "Attached \(attachments.count) images: \(names.joined(separator: ", "))\(overflow)"
-        }
-
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return attachmentLine }
-        return "\(text)\n\n\(attachmentLine)"
-    }
-
     // Pretty-print tool input for display
     private func displayInput(name: String, json: String) -> String {
         guard let data = json.data(using: .utf8),
@@ -1391,6 +1498,10 @@ struct ContentView: View {
     @State private var showProjectPanel = false
     @State private var showProjectHub = false
     @State private var composerImageAttachments: [LatticeImageAttachment] = []
+    @State private var selectedImagePreview: LatticeImageAttachment?
+    @State private var composerEditingAttachment: LatticeImageAttachment?
+    @State private var draggingComposerAttachmentID: UUID?
+    @State private var isComposerDropTarget = false
     @State private var isDirectRunInProgress = false
     @State private var composerTipIndex = 0
     @State private var directRunBanner: String?
@@ -1971,6 +2082,14 @@ struct ContentView: View {
 
     var body: some View {
         layeredMainInterface
+        .sheet(item: $selectedImagePreview) { attachment in
+            LatticeImagePreviewSheet(attachment: attachment)
+        }
+        .sheet(item: $composerEditingAttachment) { attachment in
+            LatticeImageEditorSheet(attachment: attachment) { edited in
+                replaceComposerAttachment(attachment, with: edited)
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 viewModel.persistSession()
@@ -2452,7 +2571,7 @@ struct ContentView: View {
         case .user(let item):
             HStack(alignment: .top, spacing: 0) {
                 Spacer(minLength: 0)
-                ChatItemView(item: item)
+                ChatItemView(item: item, onOpenAttachment: { selectedImagePreview = $0 })
             }
             .frame(maxWidth: latticeTranscriptColumnMaxWidth, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -2507,6 +2626,7 @@ struct ContentView: View {
                         }
                     }
                     .padding(.horizontal, 2)
+                    .animation(.spring(response: 0.26, dampingFraction: 0.84), value: composerImageAttachments.map(\.id))
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -2540,7 +2660,8 @@ struct ContentView: View {
                     LatticeComposerTextView(
                         text: $input,
                         measuredHeight: $composerHeight,
-                        onSubmit: sendMessage
+                        onSubmit: sendMessage,
+                        onPasteImages: pasteImagesFromClipboardIfAvailable
                     )
                     .frame(height: min(max(composerHeight, 42), 160))
                     .padding(.leading, 8)
@@ -2587,7 +2708,30 @@ struct ContentView: View {
                 .padding(.trailing, 6)
                 .padding(.vertical, 2)
             }
-            .latticeElevatedCard(radius: 18, strokeOpacity: 0.08, shadowOpacity: 0.04)
+            .latticeElevatedCard(radius: 18, strokeOpacity: isComposerDropTarget ? 0.18 : 0.08, shadowOpacity: 0.04)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.accentColor.opacity(isComposerDropTarget ? 0.08 : 0))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(
+                        Color.accentColor.opacity(isComposerDropTarget ? 0.55 : 0),
+                        style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])
+                    )
+            )
+            .onDrop(
+                of: [
+                    UTType.fileURL.identifier,
+                    UTType.png.identifier,
+                    UTType.jpeg.identifier,
+                    UTType.tiff.identifier,
+                    UTType.gif.identifier,
+                    UTType.image.identifier
+                ],
+                isTargeted: selectedModelSupportsImages ? $isComposerDropTarget : .constant(false),
+                perform: handleComposerDrop(providers:)
+            )
 
             Text(composerTips[composerTipIndex % composerTips.count])
                 .font(.caption2)
@@ -2648,37 +2792,140 @@ struct ContentView: View {
         composerImageAttachments.append(contentsOf: picked)
     }
 
+    private func handleComposerDrop(providers: [NSItemProvider]) -> Bool {
+        guard selectedModelSupportsImages else { return false }
+        let canLoad = providers.contains { provider in
+            provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.png.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.tiff.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+        }
+        guard canLoad else { return false }
+
+        for provider in providers {
+            loadComposerAttachment(from: provider)
+        }
+        return true
+    }
+
+    private func loadComposerAttachment(from provider: NSItemProvider) {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      let attachment = LatticeImageAttachment(url: url) else { return }
+                DispatchQueue.main.async {
+                    appendComposerAttachments([attachment])
+                }
+            }
+            return
+        }
+
+        let imageTypeIdentifiers = [
+            UTType.png.identifier,
+            UTType.jpeg.identifier,
+            UTType.tiff.identifier,
+            UTType.gif.identifier,
+            UTType.image.identifier
+        ]
+        guard let typeIdentifier = imageTypeIdentifiers.first(where: provider.hasItemConformingToTypeIdentifier(_:)) else {
+            return
+        }
+
+        provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+            guard let data else { return }
+            let mimeType: String? = switch typeIdentifier {
+            case UTType.png.identifier: "image/png"
+            case UTType.jpeg.identifier: "image/jpeg"
+            case UTType.gif.identifier: "image/gif"
+            case UTType.tiff.identifier: "image/tiff"
+            default: nil
+            }
+            guard let attachment = LatticeImageAttachment.fromImageData(data, mimeType: mimeType) else { return }
+            DispatchQueue.main.async {
+                appendComposerAttachments([attachment])
+            }
+        }
+    }
+
+    private func appendComposerAttachments(_ attachments: [LatticeImageAttachment]) {
+        guard !attachments.isEmpty else { return }
+        let existingPaths = Set(composerImageAttachments.map(\.path))
+        let fresh = attachments.filter { !existingPaths.contains($0.path) }
+        guard !fresh.isEmpty else { return }
+        composerImageAttachments.append(contentsOf: fresh)
+    }
+
+    private func replaceComposerAttachment(_ old: LatticeImageAttachment, with new: LatticeImageAttachment) {
+        guard let index = composerImageAttachments.firstIndex(where: { $0.id == old.id }) else { return }
+        composerImageAttachments[index] = new
+    }
+
+    private func pasteImagesFromClipboardIfAvailable() -> Bool {
+        guard selectedModelSupportsImages else { return false }
+
+        var attachments: [LatticeImageAttachment] = []
+        if let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
+            attachments.append(contentsOf: urls.compactMap(LatticeImageAttachment.init(url:)))
+        }
+
+        if attachments.isEmpty, let pastedImage = NSImage(pasteboard: NSPasteboard.general),
+           let attachment = LatticeImageAttachment.fromClipboardImage(pastedImage) {
+            attachments.append(attachment)
+        }
+
+        guard !attachments.isEmpty else { return false }
+        appendComposerAttachments(attachments)
+        return true
+    }
+
     @ViewBuilder
     private func composerAttachmentChip(_ attachment: LatticeImageAttachment) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "photo")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(attachment.fileName)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+        ZStack(alignment: .topTrailing) {
+            Button {
+                composerEditingAttachment = attachment
+            } label: {
+                LatticeAttachmentThumbnail(
+                    attachment: attachment,
+                    width: latticeComposerAttachmentWidth,
+                    height: latticeComposerAttachmentHeight,
+                    cornerRadius: 14,
+                    showsFileName: false
+                )
+            }
+            .buttonStyle(.plain)
+            .onDrag {
+                draggingComposerAttachmentID = attachment.id
+                return NSItemProvider(object: attachment.id.uuidString as NSString)
+            }
+            .onDrop(
+                of: [UTType.plainText.identifier],
+                delegate: ComposerAttachmentReorderDropDelegate(
+                    target: attachment,
+                    attachments: $composerImageAttachments,
+                    draggingID: $draggingComposerAttachmentID
+                )
+            )
 
             Button {
                 composerImageAttachments.removeAll { $0.id == attachment.id }
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary.opacity(0.85))
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle()
+                            .fill(Color.black.opacity(0.55))
+                    )
             }
             .buttonStyle(.plain)
+            .help("Remove image")
+            .padding(6)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
-        )
+        .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
     }
 
     private func copyTextAndToast(_ text: String, toast: String) {
@@ -3510,6 +3757,7 @@ private struct LatticeComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var measuredHeight: CGFloat
     let onSubmit: () -> Void
+    let onPasteImages: () -> Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, measuredHeight: $measuredHeight)
@@ -3526,6 +3774,7 @@ private struct LatticeComposerTextView: NSViewRepresentable {
         let textView = ComposerNSTextView()
         textView.delegate = context.coordinator
         textView.onSubmit = onSubmit
+        textView.onPasteImages = onPasteImages
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
@@ -3556,6 +3805,7 @@ private struct LatticeComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? ComposerNSTextView else { return }
         textView.onSubmit = onSubmit
+        textView.onPasteImages = onPasteImages
         if textView.string != text {
             textView.string = text
         }
@@ -3591,6 +3841,7 @@ private struct LatticeComposerTextView: NSViewRepresentable {
 
 private final class ComposerNSTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onPasteImages: (() -> Bool)?
 
     var fittingHeight: CGFloat {
         guard let textContainer, let layoutManager else { return 42 }
@@ -3607,6 +3858,13 @@ private final class ComposerNSTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    override func paste(_ sender: Any?) {
+        if onPasteImages?() == true {
+            return
+        }
+        super.paste(sender)
     }
 }
 
@@ -4827,12 +5085,18 @@ private struct ToolTimelineStepRow: View {
 
 struct ChatItemView: View {
     let item: ChatItem
+    var onOpenAttachment: ((LatticeImageAttachment) -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         switch item.kind {
-        case .user(let text):
-            UserBubble(text: text, reduceMotion: reduceMotion)
+        case .user(let text, let attachments):
+            UserBubble(
+                text: text,
+                attachments: attachments,
+                reduceMotion: reduceMotion,
+                onOpenAttachment: onOpenAttachment
+            )
         case .reasoning(let text, let isStreaming):
             ReasoningCollapsibleCard(text: text, streaming: isStreaming, reduceMotion: reduceMotion)
         case .working:
@@ -4842,6 +5106,560 @@ struct ChatItemView: View {
         case .tool(let name, let input, let output, let isError, let isRunning):
             ToolCard(name: name, input: input, output: output, isError: isError, isRunning: isRunning)
         }
+    }
+}
+
+private struct LatticeAttachmentThumbnail: View {
+    let attachment: LatticeImageAttachment
+    var width: CGFloat
+    var height: CGFloat
+    var cornerRadius: CGFloat = 12
+    var showsFileName: Bool = true
+
+    private var image: NSImage? {
+        NSImage(contentsOfFile: attachment.path)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color.primary.opacity(0.12),
+                        Color.primary.opacity(0.05)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "photo")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.52)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+
+            if showsFileName {
+                Text(attachment.fileName)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+        )
+    }
+}
+
+private struct LatticeAttachmentGrid: View {
+    let attachments: [LatticeImageAttachment]
+    var compact: Bool = false
+    var onOpen: ((LatticeImageAttachment) -> Void)? = nil
+
+    private var tileWidth: CGFloat {
+        compact ? latticeComposerAttachmentWidth : latticeAttachmentTileWidth
+    }
+
+    private var tileHeight: CGFloat {
+        compact ? latticeComposerAttachmentHeight : latticeAttachmentTileHeight
+    }
+
+    private var singleWidth: CGFloat {
+        compact ? latticeComposerAttachmentWidth : latticeSingleMessageAttachmentWidth
+    }
+
+    private var singleHeight: CGFloat {
+        compact ? latticeComposerAttachmentHeight : latticeSingleMessageAttachmentHeight
+    }
+
+    private var columns: [GridItem] {
+        [
+            GridItem(.fixed(tileWidth), spacing: 8),
+            GridItem(.fixed(tileWidth), spacing: 8)
+        ]
+    }
+
+    var body: some View {
+        Group {
+            if attachments.count == 1, let attachment = attachments.first {
+                Button {
+                    onOpen?(attachment)
+                } label: {
+                    LatticeAttachmentThumbnail(
+                        attachment: attachment,
+                        width: singleWidth,
+                        height: singleHeight,
+                        cornerRadius: compact ? 10 : 14,
+                        showsFileName: false
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(onOpen == nil)
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                    ForEach(attachments) { attachment in
+                        Button {
+                            onOpen?(attachment)
+                        } label: {
+                            LatticeAttachmentThumbnail(
+                                attachment: attachment,
+                                width: tileWidth,
+                                height: tileHeight,
+                                cornerRadius: compact ? 10 : 12,
+                                showsFileName: false
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(onOpen == nil)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: attachments.count == 1 ? singleWidth : (tileWidth * 2) + 8, alignment: .leading)
+    }
+}
+
+private struct ComposerAttachmentReorderDropDelegate: DropDelegate {
+    let target: LatticeImageAttachment
+    @Binding var attachments: [LatticeImageAttachment]
+    @Binding var draggingID: UUID?
+
+    func dropEntered(info: DropInfo) {
+        guard let draggingID,
+              draggingID != target.id,
+              let from = attachments.firstIndex(where: { $0.id == draggingID }),
+              let to = attachments.firstIndex(where: { $0.id == target.id }) else { return }
+
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+            let moved = attachments.remove(at: from)
+            attachments.insert(moved, at: from < to ? to : to)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingID = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if !info.hasItemsConforming(to: [UTType.plainText.identifier]) {
+            draggingID = nil
+        }
+    }
+}
+
+private enum LatticeImageEditorMode: String, CaseIterable, Identifiable {
+    case draw
+    case crop
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .draw: "Draw"
+        case .crop: "Crop"
+        }
+    }
+}
+
+private func latticeFittedImageRect(imageSize: CGSize, in container: CGSize) -> CGRect {
+    guard imageSize.width > 0, imageSize.height > 0, container.width > 0, container.height > 0 else {
+        return .zero
+    }
+    let scale = min(container.width / imageSize.width, container.height / imageSize.height)
+    let fittedSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+    return CGRect(
+        x: (container.width - fittedSize.width) / 2,
+        y: (container.height - fittedSize.height) / 2,
+        width: fittedSize.width,
+        height: fittedSize.height
+    )
+}
+
+private func latticeNormalizedPoint(from location: CGPoint, in rect: CGRect) -> CGPoint? {
+    guard rect.contains(location), rect.width > 0, rect.height > 0 else { return nil }
+    return CGPoint(
+        x: (location.x - rect.minX) / rect.width,
+        y: 1 - ((location.y - rect.minY) / rect.height)
+    )
+}
+
+private func latticeDisplayPoint(from normalized: CGPoint, in rect: CGRect) -> CGPoint {
+    CGPoint(
+        x: rect.minX + (normalized.x * rect.width),
+        y: rect.minY + ((1 - normalized.y) * rect.height)
+    )
+}
+
+private struct LatticeImageEditorSheet: View {
+    let attachment: LatticeImageAttachment
+    let onSave: (LatticeImageAttachment) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var mode: LatticeImageEditorMode = .draw
+    @State private var strokes: [[CGPoint]] = []
+    @State private var activeStroke: [CGPoint] = []
+    @State private var cropRect: CGRect?
+    @State private var cropStart: CGPoint?
+
+    private var image: NSImage? {
+        NSImage(contentsOfFile: attachment.path)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.94)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Edit image")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.96))
+                        Text(attachment.fileName)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.66))
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Picker("Mode", selection: $mode) {
+                        ForEach(LatticeImageEditorMode.allCases) { editorMode in
+                            Text(editorMode.title).tag(editorMode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 180)
+
+                    Button("Reset") {
+                        strokes.removeAll()
+                        activeStroke.removeAll()
+                        cropRect = nil
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Save") {
+                        saveEdits()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(image == nil)
+                }
+
+                if let image {
+                    GeometryReader { proxy in
+                        let fittedRect = latticeFittedImageRect(imageSize: image.latticePixelSize, in: proxy.size)
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(Color.white.opacity(0.04))
+
+                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFit()
+                                .frame(width: fittedRect.width, height: fittedRect.height)
+                                .position(x: fittedRect.midX, y: fittedRect.midY)
+
+                            cropOverlay(in: fittedRect)
+
+                            if mode == .draw {
+                                strokesOverlay(in: fittedRect, active: false)
+                                strokesOverlay(in: fittedRect, active: true)
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
+                        .gesture(editorGesture(in: fittedRect))
+                    }
+                    .frame(minWidth: 760, minHeight: 500)
+                } else {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                        .frame(width: 760, height: 500)
+                        .overlay {
+                            Label("Image unavailable", systemImage: "photo")
+                                .font(.headline)
+                                .foregroundStyle(.white.opacity(0.86))
+                        }
+                }
+
+                Text(mode == .crop ? "Drag to set the crop area." : "Draw directly over the image to mark up what matters.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.62))
+            }
+            .padding(24)
+        }
+        .frame(minWidth: 900, minHeight: 660)
+    }
+
+    private func editorGesture(in fittedRect: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                switch mode {
+                case .draw:
+                    guard let point = latticeNormalizedPoint(from: value.location, in: fittedRect) else { return }
+                    if activeStroke.isEmpty {
+                        activeStroke = [point]
+                    } else {
+                        activeStroke.append(point)
+                    }
+                case .crop:
+                    guard let point = latticeNormalizedPoint(from: value.location, in: fittedRect) else { return }
+                    if cropStart == nil {
+                        cropStart = point
+                    }
+                    if let start = cropStart {
+                        cropRect = CGRect(
+                            x: min(start.x, point.x),
+                            y: min(start.y, point.y),
+                            width: abs(point.x - start.x),
+                            height: abs(point.y - start.y)
+                        ).standardized
+                    }
+                }
+            }
+            .onEnded { _ in
+                switch mode {
+                case .draw:
+                    if activeStroke.count >= 2 {
+                        strokes.append(activeStroke)
+                    }
+                    activeStroke.removeAll()
+                case .crop:
+                    cropStart = nil
+                    if let cropRect, cropRect.width < 0.05 || cropRect.height < 0.05 {
+                        self.cropRect = nil
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func cropOverlay(in fittedRect: CGRect) -> some View {
+        if mode == .crop, let cropRect {
+            let displayCrop = CGRect(
+                x: fittedRect.minX + cropRect.minX * fittedRect.width,
+                y: fittedRect.minY + (1 - cropRect.maxY) * fittedRect.height,
+                width: cropRect.width * fittedRect.width,
+                height: cropRect.height * fittedRect.height
+            )
+
+            Path { path in
+                path.addRect(fittedRect)
+                path.addRect(displayCrop)
+            }
+            .fill(Color.black.opacity(0.34), style: FillStyle(eoFill: true))
+
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.94), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                .frame(width: displayCrop.width, height: displayCrop.height)
+                .position(x: displayCrop.midX, y: displayCrop.midY)
+        }
+    }
+
+    @ViewBuilder
+    private func strokesOverlay(in fittedRect: CGRect, active: Bool) -> some View {
+        let source = active ? [activeStroke] : strokes
+        ForEach(Array(source.enumerated()), id: \.offset) { _, stroke in
+            Path { path in
+                guard stroke.count >= 2 else { return }
+                for (index, point) in stroke.enumerated() {
+                    let mapped = latticeDisplayPoint(from: point, in: fittedRect)
+                    if index == 0 {
+                        path.move(to: mapped)
+                    } else {
+                        path.addLine(to: mapped)
+                    }
+                }
+            }
+            .stroke(
+                active ? Color.orange : Color(nsColor: .systemPink),
+                style: StrokeStyle(lineWidth: active ? 4 : 5, lineCap: .round, lineJoin: .round)
+            )
+        }
+    }
+
+    private func saveEdits() {
+        guard var image else { return }
+
+        let normalizedCrop = cropRect?.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        if let normalizedCrop,
+           normalizedCrop.width > 0.05, normalizedCrop.height > 0.05,
+           let cropped = image.latticeCropped(to: normalizedCrop) {
+            image = cropped
+        }
+
+        let allStrokes = strokes + (activeStroke.count >= 2 ? [activeStroke] : [])
+        let transformedStrokes: [[CGPoint]]
+        if let normalizedCrop, normalizedCrop.width > 0.05, normalizedCrop.height > 0.05 {
+            transformedStrokes = allStrokes.compactMap { stroke in
+                let remapped = stroke.compactMap { point -> CGPoint? in
+                    guard normalizedCrop.contains(point) else { return nil }
+                    return CGPoint(
+                        x: (point.x - normalizedCrop.minX) / normalizedCrop.width,
+                        y: (point.y - normalizedCrop.minY) / normalizedCrop.height
+                    )
+                }
+                return remapped.count >= 2 ? remapped : nil
+            }
+        } else {
+            transformedStrokes = allStrokes
+        }
+
+        if !transformedStrokes.isEmpty, let annotated = image.latticeAnnotated(with: transformedStrokes) {
+            image = annotated
+        }
+
+        guard let editedAttachment = LatticeImageAttachment.fromEditedImage(image, originalName: attachment.fileName) else { return }
+        onSave(editedAttachment)
+        dismiss()
+    }
+}
+
+private struct LatticeImagePreviewSheet: View {
+    let attachment: LatticeImageAttachment
+    @Environment(\.dismiss) private var dismiss
+    @State private var zoom: CGFloat = 1
+    @State private var steadyZoom: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var steadyOffset: CGSize = .zero
+
+    private var image: NSImage? {
+        NSImage(contentsOfFile: attachment.path)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.94)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                Spacer(minLength: 0)
+
+                if let image {
+                    GeometryReader { proxy in
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.white.opacity(0.03))
+
+                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFit()
+                                .scaleEffect(zoom)
+                                .offset(offset)
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .onTapGesture(count: 2) {
+                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                                        zoom = 1
+                                        steadyZoom = 1
+                                        offset = .zero
+                                        steadyOffset = .zero
+                                    }
+                                }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.34), radius: 28, y: 18)
+                        .simultaneousGesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    zoom = min(max(1, steadyZoom * value), 6)
+                                }
+                                .onEnded { _ in
+                                    steadyZoom = zoom
+                                    if zoom <= 1.01 {
+                                        zoom = 1
+                                        steadyZoom = 1
+                                        offset = .zero
+                                        steadyOffset = .zero
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    guard zoom > 1.01 else { return }
+                                    offset = CGSize(
+                                        width: steadyOffset.width + value.translation.width,
+                                        height: steadyOffset.height + value.translation.height
+                                    )
+                                }
+                                .onEnded { _ in
+                                    steadyOffset = offset
+                                }
+                        )
+                    }
+                    .frame(maxWidth: 980, maxHeight: 760)
+                } else {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: 420, height: 280)
+                        .overlay {
+                            Label("Preview unavailable", systemImage: "photo")
+                                .font(.headline)
+                                .foregroundStyle(.white.opacity(0.86))
+                        }
+                }
+
+                VStack(spacing: 4) {
+                    Text(attachment.fileName)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.96))
+                    Text("Pinch to zoom, drag to pan, double-click to reset, Escape to close")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.62))
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+            .padding(20)
+        }
+        .frame(minWidth: 860, minHeight: 620)
     }
 }
 
@@ -4873,24 +5691,46 @@ private struct ShrinkWrappedBubbleTextLayout: Layout {
 
 struct UserBubble: View {
     let text: String
+    let attachments: [LatticeImageAttachment]
     var reduceMotion: Bool = false
+    var onOpenAttachment: ((LatticeImageAttachment) -> Void)? = nil
 
     private var innerTextMaxWidth: CGFloat {
         max(44, latticeUserBubbleMaxWidth - 28)
     }
 
+    private var copyableText: String {
+        guard !attachments.isEmpty else { return text }
+        let names = attachments.map(\.fileName).joined(separator: ", ")
+        let attachmentLine = attachments.count == 1
+            ? "Attached image: \(names)"
+            : "Attached images: \(names)"
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return attachmentLine }
+        return "\(trimmed)\n\n\(attachmentLine)"
+    }
+
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            ShrinkWrappedBubbleTextLayout(maxContentWidth: innerTextMaxWidth) {
-                Text(text)
-                    .font(.body)
-                    .textSelection(.disabled)
-                    .multilineTextAlignment(.leading)
-                    .lineSpacing(4)
-                    .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: attachments.isEmpty ? 0 : 10) {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    ShrinkWrappedBubbleTextLayout(maxContentWidth: innerTextMaxWidth) {
+                        Text(trimmed)
+                            .font(.body)
+                            .textSelection(.disabled)
+                            .multilineTextAlignment(.leading)
+                            .lineSpacing(4)
+                            .foregroundStyle(.primary)
+                    }
+                }
+
+                if !attachments.isEmpty {
+                    LatticeAttachmentGrid(attachments: attachments, compact: false, onOpen: onOpenAttachment)
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, attachments.isEmpty ? 14 : (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 8 : 10))
+            .padding(.vertical, attachments.isEmpty ? 10 : (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 8 : 10))
             .background(
                 RoundedRectangle(cornerRadius: LatticeSurfaceTokens.cornerTranscript, style: .continuous)
                     .fill(Color.accentColor.opacity(0.20))
@@ -4913,7 +5753,7 @@ struct UserBubble: View {
             .shadow(color: Color.accentColor.opacity(0.08), radius: 10, y: 3)
             .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
 
-            MessageCopyButton(text: text, trailing: true)
+            MessageCopyButton(text: copyableText, trailing: true)
         }
     }
 }

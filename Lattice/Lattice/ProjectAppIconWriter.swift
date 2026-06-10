@@ -178,11 +178,3 @@ enum ProjectAppIconWriter {
         try write(image: image, projectRoot: projectRoot)
     }
 }
-
-    
-
-
-
-
-
- 
