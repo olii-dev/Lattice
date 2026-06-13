@@ -6,6 +6,8 @@ struct ProjectHubView: View {
     @ObservedObject var recentStore: RecentProjectsStore
     @Binding var selectedProjectPath: String
     @Binding var showProjectHub: Bool
+    var onProjectCreated: ((URL, ProjectTemplatePlatform) -> Void)? = nil
+    var onRemoveProject: ((RecentProject) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
@@ -48,8 +50,12 @@ struct ProjectHubView: View {
             }
         }
         .sheet(isPresented: $showNewProject) {
-            NewProjectSheet(isPresented: $showNewProject) { createdRoot in
-                selectedProjectPath = createdRoot.path
+            NewProjectSheet(isPresented: $showNewProject) { createdRoot, platform in
+                if let onProjectCreated {
+                    onProjectCreated(createdRoot, platform)
+                } else {
+                    selectedProjectPath = createdRoot.path
+                }
                 recentStore.add(path: createdRoot.path)
                 showProjectHub = false
             }
@@ -82,7 +88,13 @@ struct ProjectHubView: View {
                     showProjectHub = false
                 },
                 onTogglePinned: { recentStore.togglePinned($0) },
-                onRemove: { recentStore.remove($0) }
+                onRemove: { project in
+                    if let onRemoveProject {
+                        onRemoveProject(project)
+                    } else {
+                        recentStore.remove(project)
+                    }
+                }
             )
             .padding(.leading, 22)
             .padding(.trailing, 30)
@@ -125,7 +137,13 @@ struct ProjectHubView: View {
                     showProjectHub = false
                 },
                 onTogglePinned: { recentStore.togglePinned($0) },
-                onRemove: { recentStore.remove($0) }
+                onRemove: { project in
+                    if let onRemoveProject {
+                        onRemoveProject(project)
+                    } else {
+                        recentStore.remove(project)
+                    }
+                }
             )
             .padding(22)
         }

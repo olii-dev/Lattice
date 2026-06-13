@@ -566,10 +566,10 @@ final class ChatViewModel: ObservableObject {
     private var scopedProjectPath: String = ""
     private var compactionRunForThisAgentBurst = false
     /// Local-only compaction when estimated API history + system/tools is truly near the limit.
-    private let compactionFillThreshold = 0.98
+    private let compactionFillThreshold = 0.92
     private let compactionMinHistoryMessages = 14
     /// Keep this many recent API messages verbatim when trimming older history.
-    private let compactionVerbatimTailMessages = 12
+    private let compactionVerbatimTailMessages = 10
     /// Coalesces scroll/layout pulses while SSE text arrives (was one per token).
     private var lastTranscriptScrollPulse: Date = .distantPast
     private let transcriptScrollMinInterval: TimeInterval = 0.09
@@ -981,9 +981,9 @@ final class ChatViewModel: ObservableObject {
 
     private static let firstProjectMessageEnvironmentPreamble = """
 [Lattice — one-time environment check for this project]
-Before anything else, run quick non-interactive shell checks such as:
-`xcodebuild -version`, `xcode-select -p`, and `xcrun simctl list runtimes 2>&1 | head -35`.
-Summarize what works on this Mac and list clearly what the user must fix manually (install or update Xcode, open Xcode once to finish installing components, accept the license with `sudo xcodebuild -license accept`, install simulator runtimes in Xcode Settings, etc.). Keep this short, then answer the user’s actual request below.
+Run only a very short local sanity check first, using a couple of non-interactive commands such as `xcodebuild -version`, `xcode-select -p`, and when relevant `xcrun simctl list runtimes 2>&1 | head -35`.
+If the environment looks usable, continue straight into the user’s actual request in the same turn. Do not spend the whole reply on setup commentary, file plans, or broad requirement restatement.
+Only stop and ask the user to fix something if the environment is genuinely blocked.
 ---
 """
 
@@ -2050,7 +2050,22 @@ struct ContentView: View {
                     ProjectHubView(
                         recentStore: recentStore,
                         selectedProjectPath: $selectedProjectPath,
-                        showProjectHub: $showProjectHub
+                        showProjectHub: $showProjectHub,
+                        onProjectCreated: { createdRoot, platform in
+                            switch platform {
+                            case .iOS:
+                                latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSSimulator.rawValue
+                            case .macOS:
+                                latticeLocalRunDestinationRaw = LatticeLocalRunDestination.macOS.rawValue
+                            case .watchOS:
+                                latticeLocalRunDestinationRaw = LatticeLocalRunDestination.watchOSSimulator.rawValue
+                            }
+                            selectedSimulatorID = ""
+                            selectedProjectPath = createdRoot.path
+                        },
+                        onRemoveProject: { project in
+                            forgetProjectConversation(for: project)
+                        }
                     )
                     .transition(
                         reduceMotion
@@ -3091,6 +3106,35 @@ struct ContentView: View {
         return defaultBundleIdentifierForSelectedProject
     }
 
+    private func forgetProjectConversation(for project: RecentProject) {
+        let path = ChatSessionPersistence.canonicalProjectPath(project.path)
+        guard !path.isEmpty else {
+            recentStore.remove(project)
+            return
+        }
+
+        let selectedPath = ChatSessionPersistence.canonicalProjectPath(selectedProjectPath)
+        let isCurrentProject = path == selectedPath
+
+        if isCurrentProject {
+            viewModel.clear()
+            consoleStore.clear(projectPath: path)
+            latticeDevelopmentTeam = ""
+            resolvedProjectBundleIdentifier = ""
+            directRunBanner = nil
+            directRunBannerIsError = false
+            selectedSimulatorID = ""
+            selectedProjectPath = ""
+        } else {
+            ChatSessionPersistence.clear(projectPath: path)
+            LatticeChatRestoreHistory.clear(projectPath: path)
+            consoleStore.clear(projectPath: path)
+        }
+
+        removeBundleIdentifierOverride(forProjectPath: path)
+        recentStore.remove(project)
+    }
+
     private var defaultBundleIdentifierForSelectedProject: String? {
         let path = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
@@ -3126,6 +3170,17 @@ struct ContentView: View {
         } else {
             overrides[path] = trimmed
         }
+        if let data = try? JSONEncoder().encode(overrides),
+           let string = String(data: data, encoding: .utf8) {
+            latticeBundleIdentifierOverridesJSON = string
+        }
+    }
+
+    private func removeBundleIdentifierOverride(forProjectPath rawPath: String) {
+        let path = ChatSessionPersistence.canonicalProjectPath(rawPath)
+        guard !path.isEmpty else { return }
+        var overrides = bundleIdentifierOverrides
+        guard overrides.removeValue(forKey: path) != nil else { return }
         if let data = try? JSONEncoder().encode(overrides),
            let string = String(data: data, encoding: .utf8) {
             latticeBundleIdentifierOverridesJSON = string
@@ -3503,6 +3558,7 @@ private func copyTextToPasteboard(_ text: String) {
 private struct MessageCopyButton: View {
     let text: String
     var trailing: Bool = false
+    var expands: Bool = true
     @State private var copied = false
 
     var body: some View {
@@ -3511,7 +3567,7 @@ private struct MessageCopyButton: View {
             copied = true
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-            copied = false
+                copied = false
             }
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
@@ -3522,7 +3578,113 @@ private struct MessageCopyButton: View {
         }
         .buttonStyle(.plain)
         .help(copied ? "Copied" : "Copy")
-        .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
+        .frame(maxWidth: expands ? .infinity : nil, alignment: trailing ? .trailing : .leading)
+    }
+}
+
+private struct AssistantSourcesButton: View {
+    let count: Int
+    let expanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "globe.badge.chevron.backward" : "globe")
+                    .font(.caption.weight(.semibold))
+                Text("Sources")
+                    .font(.caption.weight(.semibold))
+                Text("\(count)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary.opacity(0.88))
+            }
+            .foregroundStyle(.secondary.opacity(0.94))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+        }
+        .buttonStyle(.plain)
+        .help(count == 1 ? "Show source" : "Show sources")
+    }
+}
+
+private struct AssistantSourcesDrawer: View {
+    let sources: [AssistantWebSource]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(sources.count == 1 ? "1 source used" : "\(sources.count) sources used")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary.opacity(0.92))
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(sources) { source in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(source.domain)
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.secondary.opacity(0.78))
+                                    .textCase(.uppercase)
+                                if source.kind == .fetchedPage {
+                                    Text("opened")
+                                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(Color.accentColor.opacity(0.92))
+                                        .textCase(.uppercase)
+                                }
+                            }
+
+                            Text(source.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary.opacity(0.94))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text(source.note)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary.opacity(0.86))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 10)
+
+                        Button {
+                            guard let url = URL(string: source.url) else { return }
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Label("Open", systemImage: "arrow.up.right.square")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.primary.opacity(0.026))
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.primary.opacity(0.028))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 }
 
@@ -3978,6 +4140,16 @@ private func nonEmptyTrimmed(_ value: String?) -> String? {
 private func latticeFriendlyToolSubtitle(name: String, input: String) -> String {
     let t = input.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !t.isEmpty else { return "" }
+    if name == "web_search",
+       let queryRange = t.range(of: #""query"\s*:\s*"([^"]+)""#, options: .regularExpression) {
+        let query = String(t[queryRange]).replacingOccurrences(of: #""query"\s*:\s*""#, with: "", options: .regularExpression)
+        return query.dropLast().description
+    }
+    if name == "fetch_webpage",
+       let urlRange = t.range(of: #""url"\s*:\s*"([^"]+)""#, options: .regularExpression) {
+        let url = String(t[urlRange]).replacingOccurrences(of: #""url"\s*:\s*""#, with: "", options: .regularExpression)
+        return url.dropLast().description
+    }
     if name == "write_file" || name == "read_file" {
         let path: String = {
             if t.hasPrefix("->") {
@@ -3991,6 +4163,183 @@ private func latticeFriendlyToolSubtitle(name: String, input: String) -> String 
     let oneLine = t.replacingOccurrences(of: "\n", with: " ")
     if oneLine.count > 54 { return String(oneLine.prefix(51)) + "…" }
     return oneLine
+}
+
+private struct AssistantWebSource: Identifiable, Hashable {
+    enum Kind {
+        case searchResult
+        case fetchedPage
+    }
+
+    let id: String
+    let kind: Kind
+    let title: String
+    let domain: String
+    let url: String
+    let note: String
+}
+
+private func assistantToolInputValue(_ input: String, key: String) -> String? {
+    guard let data = input.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let value = object[key] as? String else {
+        return nil
+    }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func canonicalWebSourceID(for urlString: String) -> String {
+    guard var components = URLComponents(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+          let scheme = components.scheme?.lowercased(),
+          ["http", "https"].contains(scheme) else {
+        return urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    components.scheme = "https"
+    components.fragment = nil
+    if let queryItems = components.queryItems, !queryItems.isEmpty {
+        let filtered = queryItems.filter { item in
+            let name = item.name.lowercased()
+            return !name.hasPrefix("utm_") && name != "ref" && name != "ref_src"
+        }
+        components.queryItems = filtered.isEmpty ? nil : filtered
+    }
+    return components.string ?? urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func parseAssistantWebSearchSources(output: String, query: String?) -> [AssistantWebSource] {
+    let lines = output.components(separatedBy: .newlines)
+    var results: [AssistantWebSource] = []
+    var currentTitle: String?
+    var currentDomain: String?
+    var currentURL: String?
+    var currentSnippet: String?
+
+    func flushCurrent() {
+        guard let title = nonEmptyTrimmed(currentTitle),
+              let domain = nonEmptyTrimmed(currentDomain),
+              let url = nonEmptyTrimmed(currentURL) else {
+            currentTitle = nil
+            currentDomain = nil
+            currentURL = nil
+            currentSnippet = nil
+            return
+        }
+
+        let note = nonEmptyTrimmed(currentSnippet)
+            ?? query.map { "Relevant result for \"\($0)\"." }
+            ?? "Relevant result from a web search."
+
+        results.append(
+            AssistantWebSource(
+                id: canonicalWebSourceID(for: url),
+                kind: .searchResult,
+                title: title,
+                domain: domain,
+                url: url,
+                note: note
+            )
+        )
+
+        currentTitle = nil
+        currentDomain = nil
+        currentURL = nil
+        currentSnippet = nil
+    }
+
+    for rawLine in lines {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil {
+            flushCurrent()
+            currentTitle = String(line.replacingOccurrences(of: #"^\d+\.\s*"#, with: "", options: .regularExpression))
+        } else if line.hasPrefix("Domain: ") {
+            currentDomain = String(line.dropFirst("Domain: ".count))
+        } else if line.hasPrefix("URL: ") {
+            currentURL = String(line.dropFirst("URL: ".count))
+        } else if line.hasPrefix("Snippet: ") {
+            currentSnippet = String(line.dropFirst("Snippet: ".count))
+        } else if line.isEmpty {
+            flushCurrent()
+        }
+    }
+
+    flushCurrent()
+    return results
+}
+
+private func parseAssistantFetchedWebSource(output: String, requestedURL: String?) -> AssistantWebSource? {
+    let lines = output.components(separatedBy: .newlines)
+    var fetchedURL = nonEmptyTrimmed(requestedURL)
+    var title: String?
+    var domain: String?
+    var summary: String?
+
+    for rawLine in lines {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.hasPrefix("Fetched: ") {
+            fetchedURL = String(line.dropFirst("Fetched: ".count))
+        } else if line.hasPrefix("Domain: ") {
+            domain = String(line.dropFirst("Domain: ".count))
+        } else if line.hasPrefix("Title: ") {
+            title = String(line.dropFirst("Title: ".count))
+        } else if line.hasPrefix("Summary: ") {
+            summary = String(line.dropFirst("Summary: ".count))
+        }
+    }
+
+    guard let url = nonEmptyTrimmed(fetchedURL) else { return nil }
+    let resolvedDomain = nonEmptyTrimmed(domain)
+        ?? URLComponents(string: url)?.host?.lowercased()
+        ?? url
+    let resolvedTitle = nonEmptyTrimmed(title) ?? resolvedDomain
+    let note = nonEmptyTrimmed(summary) ?? "Lattice opened this page to read the source directly."
+
+    return AssistantWebSource(
+        id: canonicalWebSourceID(for: url),
+        kind: .fetchedPage,
+        title: resolvedTitle,
+        domain: resolvedDomain,
+        url: url,
+        note: note
+    )
+}
+
+private func assistantWebSources(from items: [ChatItem]) -> [AssistantWebSource] {
+    var fetchedSources: [AssistantWebSource] = []
+    var fetchedIDs = Set<String>()
+    var searchSources: [AssistantWebSource] = []
+    var searchIDs = Set<String>()
+
+    for item in items {
+        guard case .tool(let name, let input, let output, let isError, let isRunning) = item.kind,
+              !isError,
+              !isRunning,
+              let output = nonEmptyTrimmed(output) else {
+            continue
+        }
+
+        switch name {
+        case "fetch_webpage":
+            let requestedURL = assistantToolInputValue(input, key: "url")
+            if let source = parseAssistantFetchedWebSource(output: output, requestedURL: requestedURL),
+               fetchedIDs.insert(source.id).inserted {
+                fetchedSources.append(source)
+            }
+        case "web_search":
+            let query = assistantToolInputValue(input, key: "query")
+            for source in parseAssistantWebSearchSources(output: output, query: query) {
+                guard searchIDs.insert(source.id).inserted else { continue }
+                searchSources.append(source)
+            }
+        default:
+            break
+        }
+    }
+
+    if !fetchedSources.isEmpty {
+        return fetchedSources
+    }
+    return Array(searchSources.prefix(4))
 }
 
 /// Assistant markdown: its own light surface so long replies are not one giant slab with tools.
@@ -4039,15 +4388,6 @@ private struct AssistantProseCard: View {
                 )
             }
             MarkdownBlock(text: text, isStreaming: streaming)
-            if streaming, !text.isEmpty {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text("Building the response")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
         }
         .padding(.horizontal, unifiedTurn ? 2 : 16)
         .padding(.vertical, unifiedTurn ? 6 : 14)
@@ -4304,9 +4644,6 @@ private struct AssistantWorkingIndicatorRow: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.mini)
-            if let phase {
-                DirectorPhaseChip(phase: phase)
-            }
             Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary.opacity(0.94))
@@ -4332,6 +4669,7 @@ private struct AssistantTurnCard: View {
     var onRestoreLastPass: () -> Void
 
     @State private var workCollapsed = true
+    @State private var sourcesExpanded = false
 
     private var pieces: [AssistantTurnPiece] {
         assistantTurnPieces(from: items)
@@ -4439,6 +4777,10 @@ private struct AssistantTurnCard: View {
             || metadata.needsUserInput?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
+    private var webSources: [AssistantWebSource] {
+        assistantWebSources(from: items)
+    }
+
     private var showsRetry: Bool {
         guard let pendingRetry else { return false }
         return items.contains { $0.id == pendingRetry.errorItemId }
@@ -4497,9 +4839,9 @@ private struct AssistantTurnCard: View {
                         if !primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             AssistantProseCard(text: primaryAssistantText, streaming: !isTurnComplete, unifiedTurn: true)
                         }
-                        if !isTurnComplete {
+                        if !isTurnComplete,
+                           primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             AssistantWorkingIndicatorRow(phase: livePhase)
-                                .padding(.top, primaryAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 10)
                         }
                     } else {
                         ForEach(Array(pieces.enumerated()), id: \.element.id) { index, piece in
@@ -4551,14 +4893,40 @@ private struct AssistantTurnCard: View {
             .shadow(color: .black.opacity(0.032), radius: 10, y: 4)
             .fixedSize(horizontal: false, vertical: true)
 
-            if !copyableText.isEmpty {
-                MessageCopyButton(text: copyableText)
+            if !copyableText.isEmpty || !webSources.isEmpty {
+                HStack(spacing: 8) {
+                    if !copyableText.isEmpty {
+                        MessageCopyButton(text: copyableText, expands: false)
+                    }
+                    if !webSources.isEmpty {
+                        AssistantSourcesButton(count: webSources.count, expanded: sourcesExpanded) {
+                            if reduceMotion {
+                                sourcesExpanded.toggle()
+                            } else {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    sourcesExpanded.toggle()
+                                }
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if sourcesExpanded, !webSources.isEmpty {
+                    AssistantSourcesDrawer(sources: webSources)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .top).combined(with: .opacity),
+                            removal: .move(edge: .top).combined(with: .opacity)
+                        ))
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
         .onAppear {
             workCollapsed = true
+            if webSources.isEmpty {
+                sourcesExpanded = false
+            }
         }
     }
 
@@ -4593,11 +4961,6 @@ private struct AssistantTurnCard: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary.opacity(0.84))
                     .frame(width: 10, alignment: .center)
-
-                if !isTurnComplete {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
 
                 Text(workCollapsed ? collapsedWorkSummary : "Hide build log")
                     .font(.caption.weight(.semibold))
@@ -4946,6 +5309,8 @@ private struct ToolTimelineStepRow: View {
         case "bash": return "terminal"
         case "read_file": return "doc.text"
         case "write_file": return "square.and.pencil"
+        case "web_search": return "magnifyingglass"
+        case "fetch_webpage": return "globe"
         default: return "wrench.and.screwdriver"
         }
     }
@@ -5560,7 +5925,6 @@ private struct LatticeImagePreviewSheet: View {
         ZStack(alignment: .topTrailing) {
             Color.black.opacity(0.94)
                 .ignoresSafeArea()
-
             VStack(spacing: 16) {
                 Spacer(minLength: 0)
 
@@ -5936,6 +6300,8 @@ struct ToolCard: View {
         case "bash":           return "terminal"
         case "read_file":      return "doc.text"
         case "write_file":     return "square.and.pencil"
+        case "web_search":     return "magnifyingglass"
+        case "fetch_webpage":  return "globe"
         default:               return "wrench"
         }
     }
@@ -6443,3 +6809,5 @@ struct ContentView_Previews: PreviewProvider {
         )
     }
 }
+
+

@@ -17,7 +17,7 @@ struct NewProjectSheet: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Binding var isPresented: Bool
-    var onCreated: (URL) -> Void
+    var onCreated: (URL, ProjectTemplatePlatform) -> Void
 
     @State private var platform: ProjectTemplatePlatform = .iOS
     @State private var productName = ""
@@ -264,7 +264,7 @@ struct NewProjectSheet: View {
                 parentDirectory: parent,
                 appIcon: customAppIcon
             )
-            onCreated(root)
+            onCreated(root, platform)
             isPresented = false
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
