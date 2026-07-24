@@ -269,3 +269,64 @@ import Foundation
         #expect(result.removedKeys.contains("UIBackgroundModes"))
     }
 }
+
+/// Direct unit tests for `CapabilityApplicator.removeBuildSettingLine`. This is the regex-driven
+/// path that removes a `\t\t\t\tkey = value;` line from a pbxproj config block — used when
+/// removing a capability's `INFOPLIST_KEY_*` build settings in `GENERATE_INFOPLIST_FILE = YES`
+/// projects. These are pure-function tests (no fixture needed) that lock in the regex's exact
+/// behavior, especially that it matches keys as exact setting names and never as substrings of
+/// other keys.
+@Suite struct RemoveBuildSettingLineTests {
+    /// A realistic app-target config block from the template, with a couple of
+    /// INFOPLIST_KEY_* settings we'll remove. Uses real tab characters to match what pbxproj
+    /// contains (verified against `PbxprojFixtures.iosTemplate`).
+    private let block = """
+\t\tA100000A0000000000000003 /* Debug */ = {
+\t\t\tisa = XCBuildConfiguration;
+\t\t\tbuildSettings = {
+\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+\t\t\t\tGENERATE_INFOPLIST_FILE = YES;
+\t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = MyApp;
+\t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;
+\t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.example.app;
+\t\t\t};
+\t\t\tname = Debug;
+\t\t};
+"""
+
+    @Test func removesTargetedSetting() {
+        let (result, didRemove) = CapabilityApplicator.removeBuildSettingLine(block, key: "INFOPLIST_KEY_UILaunchScreen_Generation")
+        #expect(didRemove, "should report a removal for an existing key")
+        #expect(!result.contains("INFOPLIST_KEY_UILaunchScreen_Generation"))
+        // The setting is gone but the block is otherwise intact.
+        #expect(result.contains("INFOPLIST_KEY_CFBundleDisplayName"))
+        #expect(result.contains("GENERATE_INFOPLIST_FILE = YES;"))
+        #expect(result.contains("PRODUCT_BUNDLE_IDENTIFIER"))
+    }
+
+    @Test func doesNotRemoveSubstringMatchingKey() {
+        // Removing INFOPLIST_KEY_CFBundle must NOT affect INFOPLIST_KEY_CFBundleDisplayName —
+        // it's not an exact match (after the prefix comes "DisplayName", not " = ").
+        let (result, didRemove) = CapabilityApplicator.removeBuildSettingLine(block, key: "INFOPLIST_KEY_CFBundle")
+        #expect(!didRemove, "a prefix-only key must not match anything")
+        // INFOPLIST_KEY_CFBundleDisplayName should SURVIVE — it's not an exact match.
+        #expect(result.contains("INFOPLIST_KEY_CFBundleDisplayName"))
+    }
+
+    @Test func doesNotMatchSubstringInOtherKeys() {
+        // Removing INFOPLIST_FILE must not match GENERATE_INFOPLIST_FILE. The match is anchored to
+        // the line indent, so a key that only appears as a suffix of another setting name is a
+        // no-op and leaves the block byte-for-byte unchanged.
+        let (result, didRemove) = CapabilityApplicator.removeBuildSettingLine(block, key: "INFOPLIST_FILE")
+        #expect(!didRemove, "INFOPLIST_FILE is not a standalone setting here; nothing should match")
+        #expect(result.contains("GENERATE_INFOPLIST_FILE = YES;"))
+        #expect(result == block, "removing a non-existent key must leave the block unchanged")
+    }
+
+    @Test func idempotentWhenKeyAbsent() {
+        let (once, _) = CapabilityApplicator.removeBuildSettingLine(block, key: "INFOPLIST_KEY_UILaunchScreen_Generation")
+        let (twice, _) = CapabilityApplicator.removeBuildSettingLine(once, key: "INFOPLIST_KEY_UILaunchScreen_Generation")
+        #expect(twice == once, "removing an already-absent key must be a no-op")
+    }
+}

@@ -36,6 +36,7 @@ enum CapabilityApplicatorError: LocalizedError {
     case unknownCapability(String)
     case missingParameter(String)
     case entitlementsWriteFailed(String)
+    case plistWriteFailed(String)
     case pbxprojParseFailure(String)
     case notApplicableToPlatform(String, ApplePlatform)
 
@@ -51,6 +52,8 @@ enum CapabilityApplicatorError: LocalizedError {
             return "Missing required parameter: \(name)."
         case .entitlementsWriteFailed(let msg):
             return "Failed to write entitlements file: \(msg)."
+        case .plistWriteFailed(let msg):
+            return "Failed to write Info.plist: \(msg)."
         case .pbxprojParseFailure(let msg):
             return "Could not parse project.pbxproj: \(msg)."
         case .notApplicableToPlatform(let capId, let platform):
@@ -353,7 +356,7 @@ enum CapabilityApplicator {
                 plist[entry.key] = entry.value
             }
             if !plist.write(to: infoURL, atomically: true) {
-                throw CapabilityApplicatorError.pbxprojParseFailure("Could not write \(infoURL.path)")
+                throw CapabilityApplicatorError.plistWriteFailed("Could not write \(infoURL.path)")
             }
             written.insert(infoURL)
             // Set INFOPLIST_FILE and GENERATE_INFOPLIST_FILE = NO on every app-target config.
@@ -420,7 +423,7 @@ enum CapabilityApplicator {
         }
 
         if !plist.write(to: infoURL, atomically: true) {
-            throw CapabilityApplicatorError.pbxprojParseFailure("Could not write \(infoURL.path)")
+            throw CapabilityApplicatorError.plistWriteFailed("Could not write \(infoURL.path)")
         }
         return MergeResult(changedKeys: changedKeys, alreadyPresent: alreadyPresent)
     }
@@ -714,7 +717,7 @@ enum CapabilityApplicator {
         }
         guard !removed.isEmpty else { return removed }
         if !plist.write(to: url, atomically: true) {
-            throw CapabilityApplicatorError.entitlementsWriteFailed("Could not write \(url.path)")
+            throw CapabilityApplicatorError.plistWriteFailed("Could not write \(url.path)")
         }
         return removed
     }
@@ -748,7 +751,11 @@ enum CapabilityApplicator {
     /// `PbxprojEditor.setOrInsertBuildSetting`. Consumes the line's leading newline so no blank
     /// line is left behind. Returns the (possibly unchanged) block and a flag indicating whether a
     /// line was actually removed.
-    private static func removeBuildSettingLine(_ block: String, key: String) -> (String, Bool) {
+    ///
+    /// Internal (not private) so the regex behavior can be locked in with direct unit tests — it's
+    /// a pure function and the only realistic way to exercise the build-setting removal path is to
+    /// call it directly.
+    static func removeBuildSettingLine(_ block: String, key: String) -> (String, Bool) {
         // Match the leading newline + indent + key + ` = ` + value + `;`. Same indentation style as
         // `setOrInsertBuildSetting`. The value is `[^;\n]*` so the match stays on one line.
         let linePattern = "\\n\\t\\t\\t\\t"
