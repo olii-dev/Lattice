@@ -108,4 +108,285 @@ enum PbxprojEditor {
         }
         return t
     }
+
+    // MARK: - Entitlements wiring
+
+    /// Result of wiring an `.entitlements` file reference into a `project.pbxproj`.
+    struct EntitlementsWiringResult {
+        /// The (possibly modified) pbxproj text.
+        let modifiedPbx: String
+        /// `true` when wiring was performed; `false` when the entitlements setting was already present.
+        let wasModified: Bool
+        /// The 24-char hex `PBXFileReference` id created for the entitlements file, if any.
+        let fileReferenceID: String?
+        /// The 24-char hex `PBXBuildFile` id created for the entitlements file, if any.
+        let buildFileID: String?
+    }
+
+    /// Thrown when entitlements wiring cannot locate the expected pbxproj structures.
+    enum EntitlementsWiringError: Error, CustomStringConvertible {
+        case noApplicationTarget
+        case noResourcesBuildPhase
+        case noSourceGroup
+        case noEndFileReferenceSection
+        case noEndBuildFileSection
+
+        var description: String {
+            switch self {
+            case .noApplicationTarget: return "Could not locate application target in pbxproj."
+            case .noResourcesBuildPhase: return "Could not locate the app target's Resources build phase."
+            case .noSourceGroup: return "Could not locate the app target's source group."
+            case .noEndFileReferenceSection: return "Could not find end of PBXFileReference section."
+            case .noEndBuildFileSection: return "Could not find end of PBXBuildFile section."
+            }
+        }
+    }
+
+    /// Idempotently wires an `.entitlements` file into a `project.pbxproj`.
+    ///
+    /// `relativePath` is like `"LatticeTplApp/LatticeTplApp.entitlements"`. The base file name
+    /// (last path component) is the entitlements file name, e.g. `"LatticeTplApp.entitlements"`.
+    ///
+    /// If `CODE_SIGN_ENTITLEMENTS = "<path>";` is already present, returns `wasModified: false`
+    /// and leaves the pbxproj unchanged. Otherwise:
+    /// - adds a `PBXFileReference` (entitlements type)
+    /// - adds a `PBXBuildFile` referencing it
+    /// - adds the build file to the app target's Resources build phase
+    /// - adds the file reference to the app target's source group
+    /// - sets `CODE_SIGN_ENTITLEMENTS` on every app-target config block
+    static func ensureEntitlementsFileReference(
+        in pbx: String,
+        relativePath: String
+    ) throws -> EntitlementsWiringResult {
+        let escapedPath = pbxEscape(relativePath)
+        // 1. Idempotency: the exact setting we would write is already present.
+        if pbx.contains("CODE_SIGN_ENTITLEMENTS = \(escapedPath);") {
+            return EntitlementsWiringResult(
+                modifiedPbx: pbx,
+                wasModified: false,
+                fileReferenceID: nil,
+                buildFileID: nil
+            )
+        }
+
+        let baseName = (relativePath as NSString).lastPathComponent
+        let existingIDs = Set(hexIDs(in: pbx))
+        let fileRefID = generateUniqueHexID(avoiding: existingIDs)
+        let buildFileID = generateUniqueHexID(avoiding: existingIDs.union([fileRefID]))
+
+        var out = pbx
+
+        // 3. PBXFileReference (entitlements).
+        let fileRefLine = "\t\t\(fileRefID) /* \(baseName) */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = \(baseName); sourceTree = \"<group>\"; };\n"
+        guard let endFileRefRange = out.range(of: "/* End PBXFileReference section */") else {
+            throw EntitlementsWiringError.noEndFileReferenceSection
+        }
+        out.insert(contentsOf: fileRefLine, at: endFileRefRange.lowerBound)
+
+        // 4. PBXBuildFile.
+        let buildFileLine = "\t\t\(buildFileID) /* \(baseName) in Resources */ = {isa = PBXBuildFile; fileRef = \(fileRefID) /* \(baseName) */; };\n"
+        guard let endBuildFileRange = out.range(of: "/* End PBXBuildFile section */") else {
+            throw EntitlementsWiringError.noEndBuildFileSection
+        }
+        out.insert(contentsOf: buildFileLine, at: endBuildFileRange.lowerBound)
+
+        // 5. Add to app target's Resources build phase `files = (...)`.
+        let resourcesPhaseID = try findResourcesBuildPhaseID(in: out)
+        out = addToBuildPhaseFiles(
+            resourcesPhaseID,
+            buildFileID: buildFileID,
+            comment: "\(baseName) in Resources",
+            in: out
+        )
+
+        // 6. Add file reference to app target's source group `children = (...)`.
+        let sourceGroupID = try findSourceGroupID(in: out)
+        out = addToGroupChildren(
+            sourceGroupID,
+            fileRefID: fileRefID,
+            comment: baseName,
+            in: out
+        )
+
+        // 7. Set CODE_SIGN_ENTITLEMENTS on every app-target config block.
+        guard let configIDs = applicationTargetConfigurationIDs(in: out) else {
+            throw EntitlementsWiringError.noApplicationTarget
+        }
+        for id in configIDs {
+            guard let range = blockRange(forConfigurationID: id, in: out) else {
+                throw EntitlementsWiringError.noApplicationTarget
+            }
+            let block = String(out[range])
+            let updated = setOrInsertBuildSetting(block, key: "CODE_SIGN_ENTITLEMENTS", value: escapedPath)
+            out.replaceSubrange(range, with: updated)
+        }
+
+        return EntitlementsWiringResult(
+            modifiedPbx: out,
+            wasModified: true,
+            fileReferenceID: fileRefID,
+            buildFileID: buildFileID
+        )
+    }
+
+    /// Generates a random 24-char uppercase-hex id that does not collide with any id in `avoiding`.
+    static func generateUniqueHexID(avoiding set: Set<String>) -> String {
+        let charset: [Character] = Array("0123456789ABCDEF")
+        while true {
+            var id = ""
+            id.reserveCapacity(24)
+            for _ in 0..<24 {
+                id.append(charset.randomElement()!)
+            }
+            if !set.contains(id) {
+                return id
+            }
+        }
+    }
+
+    /// Finds the Resources build phase id of the **application** target.
+    ///
+    /// Strategy: find `productType = "com.apple.product-type.application";`, then walk forward to
+    /// the target's `buildPhases = ( ... )` list and return the id whose comment is `/* Resources */`.
+    static func findResourcesBuildPhaseID(in pbx: String) throws -> String {
+        guard let productTypeRange = pbx.range(of: "productType = \"com.apple.product-type.application\";") else {
+            throw EntitlementsWiringError.noApplicationTarget
+        }
+        // The `buildPhases = (` for this target comes after `productType` declaration is unusual;
+        // in the template buildPhases precedes productType. So scan the enclosing target block by
+        // walking back to the target's opening `{`, then forward from there.
+        let head = pbx[..<productTypeRange.lowerBound]
+        // The target block opens with `\t\t<ID> /* <Name> */ = {`. Find the most recent `= {`
+        // before productType — that is the target block opener.
+        guard let blockOpenRange = head.range(of: "= {", options: .backwards) else {
+            throw EntitlementsWiringError.noApplicationTarget
+        }
+        let region = pbx[blockOpenRange.upperBound..<productTypeRange.upperBound]
+        guard let phasesRange = region.range(of: "buildPhases = (") else {
+            throw EntitlementsWiringError.noResourcesBuildPhase
+        }
+        let afterParen = region[phasesRange.upperBound...]
+        guard let closeParen = afterParen.range(of: ")") else {
+            throw EntitlementsWiringError.noResourcesBuildPhase
+        }
+        let inner = String(afterParen[..<closeParen.lowerBound])
+        // Each entry looks like `\t\t\t\t<ID> /* Resources */,`. Find the one with `Resources` comment.
+        for line in inner.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.contains("/* Resources */") else { continue }
+            if let id = hexIDs(in: String(line)).first {
+                return id
+            }
+        }
+        throw EntitlementsWiringError.noResourcesBuildPhase
+    }
+
+    /// Finds the `PBXGroup` that contains the app's source `.swift` files.
+    ///
+    /// Strategy: locate a known swift source file reference comment (e.g. `/* LatticeTplAppApp.swift */`),
+    /// then find the enclosing `PBXGroup` whose `children = (...)` list contains that id.
+    static func findSourceGroupID(in pbx: String) throws -> String {
+        guard let pbxGroupEnd = pbx.range(of: "/* End PBXGroup section */") else {
+            throw EntitlementsWiringError.noSourceGroup
+        }
+        let groupSection = String(pbx[..<pbxGroupEnd.lowerBound])
+        guard let pbxGroupBeginRange = groupSection.range(of: "/* Begin PBXGroup section */") else {
+            throw EntitlementsWiringError.noSourceGroup
+        }
+        let section = String(groupSection[pbxGroupBeginRange.upperBound...])
+
+        // Find a swift source file comment to anchor on. Prefer `App.swift`-style names, fall back
+        // to any `.swift` reference inside a PBXGroup's children list.
+        // We look for the group whose `children = (...)` contains a `.swift` entry.
+        var searchStart = section.startIndex
+        while searchStart < section.endIndex,
+              let groupOpen = section[searchStart...].range(of: "= {") {
+            // Capture the id preceding `= {`.
+            let prefix = section[searchStart..<groupOpen.lowerBound]
+            guard let id = hexIDs(in: String(prefix)).last else {
+                searchStart = groupOpen.upperBound
+                continue
+            }
+            // Find this group's closing brace.
+            guard let closeRange = closingBrace(in: section, from: groupOpen.upperBound) else {
+                break
+            }
+            let block = String(section[groupOpen.upperBound..<closeRange.lowerBound])
+            if block.contains("isa = PBXGroup;"),
+               let childrenRange = block.range(of: "children = (") {
+                // `block` is a standalone String, so we can search its tail directly without
+                // index-arithmetic against the original pbx string.
+                let afterParen = block[childrenRange.upperBound...]
+                if let closeParen = afterParen.range(of: ")") {
+                    let children = String(afterParen[..<closeParen.lowerBound])
+                    if children.contains("/* LatticeTplAppApp.swift */")
+                        || children.contains(".swift /*") {
+                        return id
+                    }
+                }
+            }
+            searchStart = closeRange.upperBound
+        }
+        throw EntitlementsWiringError.noSourceGroup
+    }
+
+    /// Inserts an entry line into the `files = (...)` list of the build phase identified by `phaseID`.
+    static func addToBuildPhaseFiles(
+        _ phaseID: String,
+        buildFileID: String,
+        comment: String,
+        in pbx: String
+    ) -> String {
+        var out = pbx
+        guard let phaseBlockRange = out.range(of: "\t\t\(phaseID) /* Resources */ = {") else {
+            return out
+        }
+        let region = out[phaseBlockRange.upperBound...]
+        guard let filesRange = region.range(of: "files = (") else { return out }
+        // Insert the new entry right after `files = (` so the new file appears first.
+        let insertion = "\n\t\t\t\t\(buildFileID) /* \(comment) */,"
+        out.insert(contentsOf: insertion, at: filesRange.upperBound)
+        return out
+    }
+
+    /// Inserts an entry line into the `children = (...)` list of the group identified by `groupID`.
+    static func addToGroupChildren(
+        _ groupID: String,
+        fileRefID: String,
+        comment: String,
+        in pbx: String
+    ) -> String {
+        var out = pbx
+        guard let groupRange = out.range(of: "\t\t\(groupID) /* ") else { return out }
+        let region = out[groupRange.upperBound...]
+        guard let openBrace = region.range(of: "= {") else { return out }
+        let afterBrace = out[openBrace.upperBound...]
+        guard let childrenRange = afterBrace.range(of: "children = (") else { return out }
+        // childrenRange.upperBound is a valid index into `out`.
+        let insertion = "\n\t\t\t\t\(fileRefID) /* \(comment) */,"
+        out.insert(contentsOf: insertion, at: childrenRange.upperBound)
+        return out
+    }
+
+    /// Returns the range of the matching `}` for an already-consumed opening `{`.
+    ///
+    /// `start` must point immediately *after* an opening `{` that has just been matched. The scan
+    /// begins at `depth = 1` (counting that consumed brace) and returns the index of the brace that
+    /// brings depth back to 0. The returned range covers that single closing brace.
+    private static func closingBrace(in s: String, from start: String.Index) -> Range<String.Index>? {
+        var depth = 1
+        var i = start
+        while i < s.endIndex {
+            let ch = s[i]
+            if ch == "{" { depth += 1 }
+            if ch == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return i..<s.index(after: i)
+                }
+            }
+            i = s.index(after: i)
+        }
+        return nil
+    }
 }

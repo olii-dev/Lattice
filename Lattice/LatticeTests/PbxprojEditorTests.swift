@@ -77,6 +77,71 @@ import Testing
         #expect(PbxprojEditor.stripQuotes("  \"hi\"  ") == "hi")
     }
 
+    @Test func ensureEntitlementsAddsAllWiring() throws {
+        let result = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: PbxprojFixtures.iosTemplate,
+            relativePath: "LatticeTplApp/LatticeTplApp.entitlements"
+        )
+        #expect(result.wasModified)
+        // PBXFileReference (entitlements type) present.
+        #expect(result.modifiedPbx.contains("lastKnownFileType = text.plist.entitlements; path = LatticeTplApp.entitlements;"))
+        // PBXBuildFile with "in Resources" present
+        #expect(result.modifiedPbx.contains("in Resources"))
+        // CODE_SIGN_ENTITLEMENTS set on both configs
+        let count = result.modifiedPbx.components(separatedBy: "CODE_SIGN_ENTITLEMENTS = ").count - 1
+        #expect(count == 2)
+    }
+
+    @Test func ensureEntitlementsIsIdempotent() throws {
+        let first = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: PbxprojFixtures.iosTemplate,
+            relativePath: "LatticeTplApp/LatticeTplApp.entitlements"
+        )
+        #expect(first.wasModified)
+        let second = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: first.modifiedPbx,
+            relativePath: "LatticeTplApp/LatticeTplApp.entitlements"
+        )
+        #expect(!second.wasModified)
+    }
+
+    @Test func ensureEntitlementsGeneratedIDsAreUniqueAnd24Hex() throws {
+        let result = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: PbxprojFixtures.iosTemplate,
+            relativePath: "App.entitlements"
+        )
+        let fileRefID = try #require(result.fileReferenceID)
+        let buildFileID = try #require(result.buildFileID)
+        // 24-char uppercase hex
+        #expect(fileRefID.count == 24)
+        #expect(fileRefID.allSatisfy { "0123456789ABCDEF".contains($0) })
+        #expect(buildFileID.count == 24)
+        #expect(fileRefID != buildFileID)
+        // Must not collide with existing template IDs (all start with A1)
+        #expect(!PbxprojFixtures.iosTemplate.contains(fileRefID))
+        #expect(!PbxprojFixtures.iosTemplate.contains(buildFileID))
+    }
+
+    @Test func ensureEntitlementsProducesValidPlist() throws {
+        // plutil -lint confirms the modified pbxproj is syntactically valid.
+        let result = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: PbxprojFixtures.iosTemplate,
+            relativePath: "LatticeTplApp/LatticeTplApp.entitlements"
+        )
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("test-\(UUID().uuidString).pbxproj")
+        try result.modifiedPbx.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/plutil")
+        proc.arguments = ["-lint", tmp.path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+        #expect(proc.terminationStatus == 0, "modified pbxproj must be valid: \(String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")")
+    }
+
     @Test func blockRangeSpansWholeConfigBlock() throws {
         let block = try block(forConfig: "A100000A0000000000000003")
         #expect(block.contains("A100000A0000000000000003 /* Debug */"))
