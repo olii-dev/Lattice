@@ -7,7 +7,7 @@ import Foundation
 /// setting build settings inside an `XCBuildConfiguration` block.
 enum PbxprojEditor {
     /// PBXNativeTarget application → XCConfigurationList → XCBuildConfiguration ids.
-    static func applicationTargetConfigurationIDs(in pbx: String) throws -> [String]? {
+    static func applicationTargetConfigurationIDs(in pbx: String) -> [String]? {
         guard let appRange = pbx.range(of: "productType = \"com.apple.product-type.application\";") else {
             return nil
         }

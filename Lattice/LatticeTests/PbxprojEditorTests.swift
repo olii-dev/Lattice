@@ -6,7 +6,7 @@ import Testing
     private let pbx = PbxprojFixtures.iosTemplate
 
     @Test func applicationTargetConfigurationIDs() throws {
-        let ids = try PbxprojEditor.applicationTargetConfigurationIDs(in: pbx)
+        let ids = PbxprojEditor.applicationTargetConfigurationIDs(in: pbx)
         let unwrapped = try #require(ids)
         #expect(Set(unwrapped) == ["A100000A0000000000000003", "A100000A0000000000000004"])
     }
@@ -33,6 +33,48 @@ import Testing
     @Test func hexIDsExtractsIDs() {
         let ids = PbxprojEditor.hexIDs(in: "foo A10000010000000000000001 bar B20000020000000000000002")
         #expect(ids == ["A10000010000000000000001", "B20000020000000000000002"])
+    }
+
+    @Test func pbxEscapePlainToken() {
+        #expect(PbxprojEditor.pbxEscape("hello") == "hello")
+    }
+
+    @Test func pbxEscapeWithSpace() {
+        #expect(PbxprojEditor.pbxEscape("my app") == "\"my app\"")
+    }
+
+    @Test func pbxEscapeWithDollarSign() {
+        #expect(PbxprojEditor.pbxEscape("$(SRCROOT)") == "\"$(SRCROOT)\"")
+    }
+
+    @Test func pbxEscapeEmptyString() {
+        #expect(PbxprojEditor.pbxEscape("") == "\"\"")
+    }
+
+    @Test func pbxEscapeWithDoubleQuote() {
+        // Contains a literal `"`: escapes backslashes first, then quotes, then wraps in quotes.
+        #expect(PbxprojEditor.pbxEscape("say \"hi\"") == "\"say \\\"hi\\\"\"")
+    }
+
+    @Test func pbxEscapeWithBackslashAndQuote() {
+        // Backslash must be escaped to `\\` before the quote is escaped to `\"`.
+        #expect(PbxprojEditor.pbxEscape("a\\b\"c") == "\"a\\\\b\\\"c\"")
+    }
+
+    @Test func stripQuotesUnquoted() {
+        #expect(PbxprojEditor.stripQuotes("hello") == "hello")
+    }
+
+    @Test func stripQuotesQuoted() {
+        #expect(PbxprojEditor.stripQuotes("\"hello\"") == "hello")
+    }
+
+    @Test func stripQuotesQuotedWithEscapedInternalQuote() {
+        #expect(PbxprojEditor.stripQuotes("\"say \\\"hi\\\"\"") == "say \"hi\"")
+    }
+
+    @Test func stripQuotesTrimsWhitespaceAroundQuotes() {
+        #expect(PbxprojEditor.stripQuotes("  \"hi\"  ") == "hi")
     }
 
     @Test func blockRangeSpansWholeConfigBlock() throws {

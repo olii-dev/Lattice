@@ -125,7 +125,7 @@ enum ProjectAppIdentityEditor {
         let pbxPath = projURL.appendingPathComponent("project.pbxproj")
         var text = try String(contentsOf: pbxPath, encoding: .utf8)
 
-        guard let configIDs = try PbxprojEditor.applicationTargetConfigurationIDs(in: text) else {
+        guard let configIDs = PbxprojEditor.applicationTargetConfigurationIDs(in: text) else {
             throw ProjectAppIdentityError.noApplicationTarget
         }
 
