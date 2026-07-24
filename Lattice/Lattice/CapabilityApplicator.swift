@@ -13,6 +13,22 @@ struct CapabilityApplyResult {
     let manualSteps: String?
 }
 
+/// The result of removing a capability from a project.
+///
+/// `remove` strips only this capability's keys (entitlement keys, Info.plist keys, and the
+/// corresponding `INFOPLIST_KEY_*` build settings) without touching other capabilities that may
+/// share the same files. The entitlements file itself is never deleted.
+struct CapabilityRemoveResult {
+    /// File URLs the remover wrote to during this remove, deduplicated. A file appears here only
+    /// when at least one of its keys was actually removed (idempotent re-removes touch nothing).
+    let changedFiles: [URL]
+    /// Keys (entitlement or Info.plist) that were actually present and have been stripped.
+    /// Empty on an idempotent re-remove of an already-removed capability.
+    let removedKeys: [String]
+    /// The capability's provisioning notes, surfaced for reference even on removal.
+    let manualSteps: String?
+}
+
 /// Errors thrown by `CapabilityApplicator`.
 enum CapabilityApplicatorError: LocalizedError {
     case noXcodeProject
@@ -562,6 +578,194 @@ enum CapabilityApplicator {
             return n.boolValue
         }
         return nil
+    }
+
+    // MARK: - Remove
+
+    /// Removes a capability's file-side markers from the project: entitlement keys from the
+    /// `.entitlements` plist, and Info.plist keys (from the on-disk `Info.plist`, or from the
+    /// `INFOPLIST_KEY_*` build settings when the project uses `GENERATE_INFOPLIST_FILE = YES`).
+    ///
+    /// Safe by construction: only this capability's keys are touched, so other capabilities
+    /// sharing the same files are unaffected. The entitlements file itself is **never** deleted —
+    /// other capabilities or the pbxproj file reference may still need it (even an empty `<dict/>`
+    /// is left in place). Likewise `INFOPLIST_FILE` / `GENERATE_INFOPLIST_FILE` are never unset.
+    ///
+    /// Idempotent: re-removing an already-removed capability reports `removedKeys == []` and
+    /// writes nothing.
+    static func remove(
+        capabilityId: String,
+        from projectRoot: URL
+    ) async throws -> CapabilityRemoveResult {
+        // 1. Look up the capability. Unknown id → throw.
+        guard let capability = AppleCapabilityCatalog.capability(id: capabilityId) else {
+            throw CapabilityApplicatorError.unknownCapability(capabilityId)
+        }
+
+        // 2. Locate the project and read the pbxproj.
+        let projURL = try findXcodeProj(projectRoot: projectRoot)
+        let pbxPath = projURL.appendingPathComponent("project.pbxproj")
+        var pbxText = try String(contentsOf: pbxPath, encoding: .utf8)
+        let originalPbx = pbxText
+
+        var changedFiles: Set<URL> = []
+        var removedKeys: [String] = []
+
+        let entitlementKeys = capability.entitlements.map { $0.key }
+        let plistKeys = capability.infoPlistKeys.map { $0.key }
+
+        // 3. Entitlements: only strip if the capability declares keys AND an entitlements file
+        //    actually exists on disk. The file is never deleted, even if it ends up empty.
+        if !entitlementKeys.isEmpty,
+           let entURL = try findExistingEntitlementsFile(projectRoot: projectRoot, pbxText: pbxText) {
+            let removed = try removeKeys(fromPlistAt: entURL, keys: entitlementKeys)
+            if !removed.isEmpty {
+                changedFiles.insert(entURL)
+                removedKeys.append(contentsOf: removed)
+            }
+        }
+
+        // 4. Info.plist keys.
+        if !plistKeys.isEmpty {
+            if let infoURL = try findInfoPlist(projectRoot: projectRoot, pbxText: pbxText) {
+                // On-disk Info.plist: remove the keys from it directly.
+                let removed = try removeKeys(fromPlistAt: infoURL, keys: plistKeys)
+                if !removed.isEmpty {
+                    changedFiles.insert(infoURL)
+                    removedKeys.append(contentsOf: removed)
+                }
+            } else {
+                // No on-disk Info.plist (GENERATE_INFOPLIST_FILE = YES): strip the
+                // INFOPLIST_KEY_<key> build settings from every app-target config. Never unset
+                // INFOPLIST_FILE / GENERATE_INFOPLIST_FILE — another capability may rely on them.
+                var removedFromSettings: [String] = []
+                for key in plistKeys {
+                    let didRemove = try removeBuildSettingFromAllAppConfigs(
+                        pbxText: &pbxText, key: "INFOPLIST_KEY_\(key)"
+                    )
+                    if didRemove { removedFromSettings.append(key) }
+                }
+                removedKeys.append(contentsOf: removedFromSettings)
+            }
+        }
+
+        // 5. Write the modified pbxproj if it changed.
+        if pbxText != originalPbx {
+            do {
+                try pbxText.data(using: .utf8)?.write(to: pbxPath, options: .atomic)
+            } catch {
+                throw CapabilityApplicatorError.pbxprojParseFailure(
+                    "Could not write project.pbxproj: \(error.localizedDescription)"
+                )
+            }
+            changedFiles.insert(pbxPath)
+        }
+
+        // 6. Return result.
+        return CapabilityRemoveResult(
+            changedFiles: Array(changedFiles).sorted { $0.path < $1.path },
+            removedKeys: removedKeys,
+            manualSteps: capability.provisioningNotes
+        )
+    }
+
+    // MARK: - Remove helpers
+
+    /// Locates an entitlements file that **exists on disk** by reading `CODE_SIGN_ENTITLEMENTS`
+    /// from any application-target config and resolving the path (handles `$(SRCROOT)`).
+    /// Returns nil when no setting is present or the resolved file does not exist on disk.
+    private static func findExistingEntitlementsFile(
+        projectRoot: URL,
+        pbxText: String
+    ) throws -> URL? {
+        guard let configIDs = PbxprojEditor.applicationTargetConfigurationIDs(in: pbxText) else {
+            return nil
+        }
+        for id in configIDs {
+            guard let range = PbxprojEditor.blockRange(forConfigurationID: id, in: pbxText) else { continue }
+            let block = String(pbxText[range])
+            if let raw = extractBuildSettingValue(block, key: "CODE_SIGN_ENTITLEMENTS") {
+                let trimmed = PbxprojEditor.stripQuotes(raw)
+                if !trimmed.isEmpty {
+                    let url = resolveInfoPlistURL(projectRoot: projectRoot, setting: trimmed)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        return url
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Removes the given keys from an `NSDictionary`-backed plist file at `url`. Returns the subset
+    /// of keys that were actually present (and therefore removed). Writes the modified plist back
+    /// only when at least one key was removed. **Never deletes the file itself.**
+    private static func removeKeys(fromPlistAt url: URL, keys: [String]) throws -> [String] {
+        guard let plist = NSDictionary(contentsOf: url)?.mutableCopy() as? NSMutableDictionary else {
+            // File missing or unreadable: nothing to remove.
+            return []
+        }
+        var removed: [String] = []
+        for key in keys {
+            if plist[key] != nil {
+                plist.removeObject(forKey: key)
+                removed.append(key)
+            }
+        }
+        guard !removed.isEmpty else { return removed }
+        if !plist.write(to: url, atomically: true) {
+            throw CapabilityApplicatorError.entitlementsWriteFailed("Could not write \(url.path)")
+        }
+        return removed
+    }
+
+    /// Removes the `\t\t\t\tkey = value;` line for `key` from every application-target config block
+    /// in `pbxText`. Returns `true` when at least one block had the line removed. Mutates `pbxText`
+    /// in place. This is the inverse of `setBuildSettingOnAllAppConfigs`.
+    private static func removeBuildSettingFromAllAppConfigs(
+        pbxText: inout String,
+        key: String
+    ) throws -> Bool {
+        guard let configIDs = PbxprojEditor.applicationTargetConfigurationIDs(in: pbxText) else {
+            throw CapabilityApplicatorError.noApplicationTarget
+        }
+        var anyRemoved = false
+        var out = pbxText
+        for id in configIDs {
+            guard let range = PbxprojEditor.blockRange(forConfigurationID: id, in: out) else { continue }
+            let block = String(out[range])
+            let (updated, didRemove) = removeBuildSettingLine(block, key: key)
+            if didRemove {
+                anyRemoved = true
+                out.replaceSubrange(range, with: updated)
+            }
+        }
+        pbxText = out
+        return anyRemoved
+    }
+
+    /// Removes a single `\t\t\t\tkey = value;` line from one config block — the inverse of
+    /// `PbxprojEditor.setOrInsertBuildSetting`. Consumes the line's leading newline so no blank
+    /// line is left behind. Returns the (possibly unchanged) block and a flag indicating whether a
+    /// line was actually removed.
+    private static func removeBuildSettingLine(_ block: String, key: String) -> (String, Bool) {
+        // Match the leading newline + indent + key + ` = ` + value + `;`. Same indentation style as
+        // `setOrInsertBuildSetting`. The value is `[^;\n]*` so the match stays on one line.
+        let linePattern = "\\n\\t\\t\\t\\t"
+            + NSRegularExpression.escapedPattern(for: key)
+            + " = [^;\\n]*;"
+        guard let regex = try? NSRegularExpression(pattern: linePattern, options: []) else {
+            return (block, false)
+        }
+        let ns = block as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        let replaced = regex.stringByReplacingMatches(
+            in: block, options: [], range: full, withTemplate: ""
+        )
+        if replaced != block {
+            return (replaced, true)
+        }
+        return (block, false)
     }
 }
 

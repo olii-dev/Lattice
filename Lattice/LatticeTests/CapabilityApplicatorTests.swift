@@ -199,4 +199,73 @@ import Foundation
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         #expect(proc.terminationStatus == 0, "modified pbxproj must be valid: \(output)")
     }
+
+    // MARK: - remove
+
+    @Test func removeStripsEntitlementKeys() async throws {
+        let fixtureRoot = try MinimalProjectFixture.make()
+        defer { MinimalProjectFixture.tearDown(fixtureRoot) }
+
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "app_groups", to: fixtureRoot,
+            parameters: ["AppGroupIdentifier": ["group.com.example.app"]]
+        )
+        let result = try await CapabilityApplicator.remove(
+            capabilityId: "app_groups", from: fixtureRoot
+        )
+        #expect(result.removedKeys.contains("com.apple.security.application-groups"))
+        // The entitlements file still exists (never deleted).
+        let entFile = try #require(result.changedFiles.first { $0.pathExtension == "entitlements" })
+        let dict = try #require(NSDictionary(contentsOf: entFile) as? [String: Any])
+        #expect(dict["com.apple.security.application-groups"] == nil)
+    }
+
+    @Test func removeDoesNotDeleteEntitlementsFileWhenOtherKeysRemain() async throws {
+        let fixtureRoot = try MinimalProjectFixture.make()
+        defer { MinimalProjectFixture.tearDown(fixtureRoot) }
+
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "app_groups", to: fixtureRoot,
+            parameters: ["AppGroupIdentifier": ["group.com.example.app"]]
+        )
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "push_notifications", to: fixtureRoot,
+            parameters: ["APSEnvironment": "development"]
+        )
+        // Remove only app_groups. aps-environment must survive.
+        let result = try await CapabilityApplicator.remove(
+            capabilityId: "app_groups", from: fixtureRoot
+        )
+        let entFile = try #require(result.changedFiles.first { $0.pathExtension == "entitlements" })
+        let dict = try #require(NSDictionary(contentsOf: entFile) as? [String: Any])
+        #expect(dict["com.apple.security.application-groups"] == nil, "app groups key removed")
+        #expect(dict["aps-environment"] != nil, "push key must survive")
+    }
+
+    @Test func removeIsIdempotent() async throws {
+        let fixtureRoot = try MinimalProjectFixture.make()
+        defer { MinimalProjectFixture.tearDown(fixtureRoot) }
+
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "app_groups", to: fixtureRoot,
+            parameters: ["AppGroupIdentifier": ["group.com.example.app"]]
+        )
+        _ = try await CapabilityApplicator.remove(capabilityId: "app_groups", from: fixtureRoot)
+        let second = try await CapabilityApplicator.remove(capabilityId: "app_groups", from: fixtureRoot)
+        #expect(second.removedKeys.isEmpty, "second remove should report nothing removed")
+    }
+
+    @Test func removeBackgroundModesStripsPlistKeys() async throws {
+        let fixtureRoot = try MinimalProjectFixture.make()
+        defer { MinimalProjectFixture.tearDown(fixtureRoot) }
+
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "background_modes", to: fixtureRoot,
+            parameters: ["UIBackgroundModes": ["audio", "fetch"]]
+        )
+        let result = try await CapabilityApplicator.remove(
+            capabilityId: "background_modes", from: fixtureRoot
+        )
+        #expect(result.removedKeys.contains("UIBackgroundModes"))
+    }
 }
