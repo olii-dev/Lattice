@@ -130,6 +130,8 @@ enum PbxprojEditor {
         case noSourceGroup
         case noEndFileReferenceSection
         case noEndBuildFileSection
+        case resourcesPhaseFilesNotFound
+        case groupChildrenNotFound
 
         var description: String {
             switch self {
@@ -138,6 +140,8 @@ enum PbxprojEditor {
             case .noSourceGroup: return "Could not locate the app target's source group."
             case .noEndFileReferenceSection: return "Could not find end of PBXFileReference section."
             case .noEndBuildFileSection: return "Could not find end of PBXBuildFile section."
+            case .resourcesPhaseFilesNotFound: return "Could not locate the `files = (` list inside the app target's Resources build phase."
+            case .groupChildrenNotFound: return "Could not locate the `children = (` list inside the app target's source group."
             }
         }
     }
@@ -192,7 +196,7 @@ enum PbxprojEditor {
 
         // 5. Add to app target's Resources build phase `files = (...)`.
         let resourcesPhaseID = try findResourcesBuildPhaseID(in: out)
-        out = addToBuildPhaseFiles(
+        out = try addToBuildPhaseFiles(
             resourcesPhaseID,
             buildFileID: buildFileID,
             comment: "\(baseName) in Resources",
@@ -201,7 +205,7 @@ enum PbxprojEditor {
 
         // 6. Add file reference to app target's source group `children = (...)`.
         let sourceGroupID = try findSourceGroupID(in: out)
-        out = addToGroupChildren(
+        out = try addToGroupChildren(
             sourceGroupID,
             fileRefID: fileRefID,
             comment: baseName,
@@ -331,18 +335,24 @@ enum PbxprojEditor {
     }
 
     /// Inserts an entry line into the `files = (...)` list of the build phase identified by `phaseID`.
+    ///
+    /// Throws `EntitlementsWiringError.resourcesPhaseFilesNotFound` if the phase block, its
+    /// opening `{`, or its `files = (` list cannot be found. Never silently returns the input
+    /// unchanged — wiring must either complete or fail loudly.
     static func addToBuildPhaseFiles(
         _ phaseID: String,
         buildFileID: String,
         comment: String,
         in pbx: String
-    ) -> String {
+    ) throws -> String {
         var out = pbx
         guard let phaseBlockRange = out.range(of: "\t\t\(phaseID) /* Resources */ = {") else {
-            return out
+            throw EntitlementsWiringError.resourcesPhaseFilesNotFound
         }
         let region = out[phaseBlockRange.upperBound...]
-        guard let filesRange = region.range(of: "files = (") else { return out }
+        guard let filesRange = region.range(of: "files = (") else {
+            throw EntitlementsWiringError.resourcesPhaseFilesNotFound
+        }
         // Insert the new entry right after `files = (` so the new file appears first.
         let insertion = "\n\t\t\t\t\(buildFileID) /* \(comment) */,"
         out.insert(contentsOf: insertion, at: filesRange.upperBound)
@@ -350,18 +360,28 @@ enum PbxprojEditor {
     }
 
     /// Inserts an entry line into the `children = (...)` list of the group identified by `groupID`.
+    ///
+    /// Throws `EntitlementsWiringError.groupChildrenNotFound` if the group block, its opening
+    /// `{`, or its `children = (` list cannot be found. Never silently returns the input
+    /// unchanged — wiring must either complete or fail loudly.
     static func addToGroupChildren(
         _ groupID: String,
         fileRefID: String,
         comment: String,
         in pbx: String
-    ) -> String {
+    ) throws -> String {
         var out = pbx
-        guard let groupRange = out.range(of: "\t\t\(groupID) /* ") else { return out }
+        guard let groupRange = out.range(of: "\t\t\(groupID) /* ") else {
+            throw EntitlementsWiringError.groupChildrenNotFound
+        }
         let region = out[groupRange.upperBound...]
-        guard let openBrace = region.range(of: "= {") else { return out }
+        guard let openBrace = region.range(of: "= {") else {
+            throw EntitlementsWiringError.groupChildrenNotFound
+        }
         let afterBrace = out[openBrace.upperBound...]
-        guard let childrenRange = afterBrace.range(of: "children = (") else { return out }
+        guard let childrenRange = afterBrace.range(of: "children = (") else {
+            throw EntitlementsWiringError.groupChildrenNotFound
+        }
         // childrenRange.upperBound is a valid index into `out`.
         let insertion = "\n\t\t\t\t\(fileRefID) /* \(comment) */,"
         out.insert(contentsOf: insertion, at: childrenRange.upperBound)
