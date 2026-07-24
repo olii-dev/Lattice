@@ -62,14 +62,14 @@ enum ProjectAppIdentityEditor {
     static func load(projectRoot: URL) async throws -> ProjectAppIdentity {
         let settings = try await buildSettingsDump(projectRoot: projectRoot)
 
-        var productName = stripQuotes(value(for: "PRODUCT_NAME", in: settings) ?? "")
-        var display = stripQuotes(
+        var productName = PbxprojEditor.stripQuotes(value(for: "PRODUCT_NAME", in: settings) ?? "")
+        var display = PbxprojEditor.stripQuotes(
             value(for: "INFOPLIST_KEY_CFBundleDisplayName", in: settings)
                 ?? value(for: "INFOPLIST_KEY_CFBundleName", in: settings)
                 ?? ""
         )
-        var marketing = stripQuotes(value(for: "MARKETING_VERSION", in: settings) ?? "")
-        var buildNum = stripQuotes(value(for: "CURRENT_PROJECT_VERSION", in: settings) ?? "")
+        var marketing = PbxprojEditor.stripQuotes(value(for: "MARKETING_VERSION", in: settings) ?? "")
+        var buildNum = PbxprojEditor.stripQuotes(value(for: "CURRENT_PROJECT_VERSION", in: settings) ?? "")
 
         if let rawPlist = value(for: "INFOPLIST_FILE", in: settings),
            let plistURL = resolveInfoPlistURL(projectRoot: projectRoot, infoPlistSetting: rawPlist),
@@ -91,7 +91,7 @@ enum ProjectAppIdentityEditor {
     static func resolvedBundleIdentifier(projectRoot: URL) async throws -> String? {
         let settings = try await buildSettingsDump(projectRoot: projectRoot)
         let raw = value(for: "PRODUCT_BUNDLE_IDENTIFIER", in: settings) ?? ""
-        let s = stripQuotes(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        let s = PbxprojEditor.stripQuotes(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         return s.isEmpty ? nil : s
     }
 
@@ -125,12 +125,12 @@ enum ProjectAppIdentityEditor {
         let pbxPath = projURL.appendingPathComponent("project.pbxproj")
         var text = try String(contentsOf: pbxPath, encoding: .utf8)
 
-        guard let configIDs = try applicationTargetConfigurationIDs(in: text) else {
+        guard let configIDs = try PbxprojEditor.applicationTargetConfigurationIDs(in: text) else {
             throw ProjectAppIdentityError.noApplicationTarget
         }
 
         for id in configIDs {
-            guard let range = blockRange(forConfigurationID: id, in: text) else {
+            guard let range = PbxprojEditor.blockRange(forConfigurationID: id, in: text) else {
                 throw ProjectAppIdentityError.parseFailure("Missing XCBuildConfiguration \(id).")
             }
             let block = String(text[range])
@@ -171,7 +171,7 @@ enum ProjectAppIdentityEditor {
     }
 
     private static func resolveInfoPlistURL(projectRoot: URL, infoPlistSetting: String) -> URL? {
-        let trimmed = stripQuotes(infoPlistSetting.trimmingCharacters(in: .whitespacesAndNewlines))
+        let trimmed = PbxprojEditor.stripQuotes(infoPlistSetting.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !trimmed.isEmpty else { return nil }
         var path = trimmed
         path = path.replacingOccurrences(of: "$(SRCROOT)", with: projectRoot.path)
@@ -215,55 +215,6 @@ enum ProjectAppIdentityEditor {
         return first
     }
 
-    /// PBXNativeTarget application → XCConfigurationList → XCBuildConfiguration ids.
-    private static func applicationTargetConfigurationIDs(in pbx: String) throws -> [String]? {
-        guard let appRange = pbx.range(of: "productType = \"com.apple.product-type.application\";") else {
-            return nil
-        }
-        let head = pbx[..<appRange.lowerBound]
-        guard let listRange = head.range(of: "buildConfigurationList = ", options: .backwards) else {
-            return nil
-        }
-        let tail = head[listRange.upperBound...]
-        guard let space = tail.firstIndex(of: " ") else { return nil }
-        let id = String(tail[..<space]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard id.count == 24, id.range(of: "^[0-9A-Fa-f]{24}$", options: .regularExpression) != nil else {
-            return nil
-        }
-
-        guard let listStart = pbx.range(of: "\t\t\(id) /*") else { return nil }
-        guard let openBrace = pbx[listStart.upperBound...].range(of: "{") else { return nil }
-        let scanStart = openBrace.upperBound
-        guard let buildConfigsRange = pbx[scanStart...].range(of: "buildConfigurations = (") else { return nil }
-        let afterParen = pbx[buildConfigsRange.upperBound...]
-        guard let closeParen = afterParen.range(of: ");") else { return nil }
-        let inner = String(afterParen[..<closeParen.lowerBound])
-        let ids = hexIDs(in: inner)
-        let unique = Array(Set(ids)).sorted()
-        return unique.isEmpty ? nil : unique
-    }
-
-    private static func blockRange(forConfigurationID id: String, in pbx: String) -> Range<String.Index>? {
-        let anchor = "\t\t\(id) /*"
-        guard let start = pbx.range(of: anchor) else { return nil }
-        guard let brace = pbx[start.upperBound...].firstIndex(of: "{") else { return nil }
-        var depth = 0
-        var i = brace
-        let endIndex = pbx.endIndex
-        while i < endIndex {
-            let ch = pbx[i]
-            if ch == "{" { depth += 1 }
-            if ch == "}" {
-                depth -= 1
-                if depth == 0 {
-                    return start.lowerBound..<pbx.index(after: i)
-                }
-            }
-            i = pbx.index(after: i)
-        }
-        return nil
-    }
-
     private static func replaceBuildSettings(
         in block: String,
         productName: String,
@@ -274,70 +225,24 @@ enum ProjectAppIdentityEditor {
         developmentTeam: String?
     ) -> String {
         var result = block
-        result = setOrInsertBuildSetting(result, key: "PRODUCT_NAME", value: pbxEscape(productName))
-        result = setOrInsertBuildSetting(result, key: "INFOPLIST_KEY_CFBundleDisplayName", value: pbxEscape(displayName))
-        result = setOrInsertBuildSetting(result, key: "MARKETING_VERSION", value: pbxEscape(marketingVersion))
-        result = setOrInsertBuildSetting(result, key: "CURRENT_PROJECT_VERSION", value: pbxEscape(buildNumber))
+        result = PbxprojEditor.setOrInsertBuildSetting(result, key: "PRODUCT_NAME", value: PbxprojEditor.pbxEscape(productName))
+        result = PbxprojEditor.setOrInsertBuildSetting(result, key: "INFOPLIST_KEY_CFBundleDisplayName", value: PbxprojEditor.pbxEscape(displayName))
+        result = PbxprojEditor.setOrInsertBuildSetting(result, key: "MARKETING_VERSION", value: PbxprojEditor.pbxEscape(marketingVersion))
+        result = PbxprojEditor.setOrInsertBuildSetting(result, key: "CURRENT_PROJECT_VERSION", value: PbxprojEditor.pbxEscape(buildNumber))
         if let bundleIdentifier, !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result = setOrInsertBuildSetting(
+            result = PbxprojEditor.setOrInsertBuildSetting(
                 result,
                 key: "PRODUCT_BUNDLE_IDENTIFIER",
-                value: pbxEscape(bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines))
+                value: PbxprojEditor.pbxEscape(bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines))
             )
         }
         if let developmentTeam, !developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result = setOrInsertBuildSetting(
+            result = PbxprojEditor.setOrInsertBuildSetting(
                 result,
                 key: "DEVELOPMENT_TEAM",
-                value: pbxEscape(developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines))
+                value: PbxprojEditor.pbxEscape(developmentTeam.trimmingCharacters(in: .whitespacesAndNewlines))
             )
         }
         return result
-    }
-
-    private static func hexIDs(in text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: "[0-9A-Fa-f]{24}") else { return [] }
-        let ns = text as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        return re.matches(in: text, range: range).map { ns.substring(with: $0.range) }
-    }
-
-    private static func setOrInsertBuildSetting(_ block: String, key: String, value: String) -> String {
-        let linePattern = "\\t\\t\\t\\t\(NSRegularExpression.escapedPattern(for: key)) = [^\\n]*;"
-        if let regex = try? NSRegularExpression(pattern: linePattern, options: []) {
-            let ns = block as NSString
-            let full = NSRange(location: 0, length: ns.length)
-            let replacement = "\t\t\t\t\(key) = \(value);"
-            let replaced = regex.stringByReplacingMatches(in: block, options: [], range: full, withTemplate: replacement)
-            if replaced != block {
-                return replaced
-            }
-        }
-        guard let insertAt = block.range(of: "buildSettings = {") else { return block }
-        let insertion = "\n\t\t\t\t\(key) = \(value);"
-        var out = block
-        out.insert(contentsOf: insertion, at: insertAt.upperBound)
-        return out
-    }
-
-    private static func pbxEscape(_ s: String) -> String {
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.contains("\"") else {
-            return "\"" + trimmed.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-        }
-        if trimmed.contains(" ") || trimmed.contains("$") || trimmed.isEmpty {
-            return "\"" + trimmed + "\""
-        }
-        return trimmed
-    }
-
-    private static func stripQuotes(_ s: String) -> String {
-        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.hasPrefix("\""), t.hasSuffix("\""), t.count >= 2 {
-            t.removeFirst()
-            t.removeLast()
-            return t.replacingOccurrences(of: "\\\"", with: "\"")
-        }
-        return t
     }
 }
