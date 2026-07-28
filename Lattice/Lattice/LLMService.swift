@@ -171,6 +171,41 @@ struct LLMService {
                 ],
                 "required": ["url"]
             ]
+        ],
+        [
+            "name": "add_capability",
+            "description": "Add an Apple capability to the current project. Updates entitlements, Info.plist, and project build settings correctly and idempotently. Always use this instead of hand-editing entitlements or project.pbxproj for capabilities.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "capability": [
+                        "type": "string",
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes"],
+                        "description": "The capability to add."
+                    ],
+                    "parameters": [
+                        "type": "object",
+                        "description": "Capability-specific values. app_groups: AppGroupIdentifier (array of group ids, e.g. [\"group.com.example.app\"]). push_notifications: APSEnvironment ('development' or 'production'). background_modes: UIBackgroundModes (array, e.g. ['audio','remote-notification']). keychain_sharing: KeychainAccessGroup (string). storekit: none.",
+                        "properties": [:]
+                    ]
+                ],
+                "required": ["capability"]
+            ]
+        ],
+        [
+            "name": "remove_capability",
+            "description": "Remove an Apple capability from the current project. Strips the capability's entitlement and Info.plist keys safely without affecting other capabilities.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "capability": [
+                        "type": "string",
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes"],
+                        "description": "The capability to remove."
+                    ]
+                ],
+                "required": ["capability"]
+            ]
         ]
     ]
 
@@ -671,9 +706,10 @@ struct LLMService {
         - Write short compact paragraphs with minimal whitespace.
         - For apps created from Lattice’s “New project” flow, bundle identifiers follow com.lattice.<lowercased product slug> unless the user or Xcode project already specifies a different bundle ID. Prefer that pattern when you invent or adjust bundle IDs for those projects.
         - Always keep track of the active bundle identifier from ACTIVE CONTEXT. If you create a new app target, adjust project identity, or touch signing-related files, preserve that bundle identifier unless the user explicitly asks to change it.
-        - When the user asks for Apple capabilities or a feature that requires them, you may update the project files needed to support it: entitlements, Info.plist keys, project build settings, and file references in the Xcode project. Do the file-side work yourself when possible.
-        - Capability examples include push notifications, background modes, associated domains, app groups, HealthKit, camera, microphone, photo library, and local network access.
-        - If a capability also needs an Apple Developer portal action or manual Xcode signing step, still do the file-side changes and then tell the user exactly what remains to be enabled manually.
+        - When the user asks for an Apple capability, use the add_capability tool. Supported capabilities: app_groups, push_notifications, storekit, keychain_sharing, background_modes. The tool handles entitlements, Info.plist keys, and project build settings correctly and idempotently.
+        - Never hand-write or hand-edit .entitlements files or entitlement-related project.pbxproj entries. Always use add_capability / remove_capability instead.
+        - For capabilities outside the supported list (HealthKit, Associated Domains, iCloud, etc.), use the web_search tool to find the correct entitlement and plist keys, then explain to the user what manual steps are needed. Do not hand-write entitlements for unsupported capabilities.
+        - After add_capability returns manual steps, relay them to the user verbatim so they can complete provisioning in the Apple Developer Portal or Xcode.
         - If a valid Xcode project already exists, edit that project in place. Do not invent a second app scaffold or hand-roll a fresh project structure beside it.
         - Do not hand-write or replace project.pbxproj just to scaffold a new app when a Lattice template project already exists. Prefer editing the source files, plist, entitlements, and asset catalog inside the existing project.
         - Default to the current Apple OS generation for the active platform unless the user explicitly asks for older compatibility:
