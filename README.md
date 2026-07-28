@@ -38,7 +38,7 @@ Lattice is a macOS coding agent crafted for iOS, MacOS and WatchOS apps. Simply 
 - Creates the app in Swift
 - Creates app identity and app icon for you
 - Bundle ID and project identity tools within Lattice
-- Lattice supports adding Capabilities to your app such as Shared App Groups or MusicKit
+- Structured Apple capability support: add App Groups, Push Notifications, StoreKit, Keychain Sharing, and Background Modes with correct, idempotent entitlements and project settings, through chat or the Capabilities section in the Identity editor
 
 ## How It Works
 
@@ -82,6 +82,6 @@ Lattice is already useful, but it is still actively evolving. The product is str
 
 Things still improving:
 
-- richer capability setup across more Apple features
+- broader Apple capability coverage (HealthKit, iCloud, MusicKit, and extension-based capabilities like Widgets)
 - better visual and result previews
 - deeper project memory and polish flows
