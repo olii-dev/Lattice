@@ -46,6 +46,14 @@ struct LatticeWriteFileUndo: Equatable, Sendable {
 }
 
 struct ToolExecutor {
+    /// Project root path, passed in by the chat view so capability tools resolve
+    /// the correct Xcode project. nil = not available (capability tools will error).
+    let projectRootPath: String?
+
+    init(projectRootPath: String? = nil) {
+        self.projectRootPath = projectRootPath
+    }
+
     func execute(name: String, input: [String: Any]) async -> (output: String, isError: Bool) {
         switch name {
         case "bash":
@@ -117,8 +125,73 @@ struct ToolExecutor {
                 return (error.localizedDescription, true)
             }
 
+        case "add_capability":
+            return await handleAddCapability(input: input)
+
+        case "remove_capability":
+            return await handleRemoveCapability(input: input)
+
         default:
             return ("Unknown tool: \(name)", true)
+        }
+    }
+
+    private func handleAddCapability(input: [String: Any]) async -> (String, Bool) {
+        guard let capabilityId = input["capability"] as? String else {
+            return ("Missing 'capability' parameter", true)
+        }
+        guard let projectRootPath, !projectRootPath.isEmpty else {
+            return ("No project folder is open. Open a project before adding a capability.", true)
+        }
+        let parameters = (input["parameters"] as? [String: Any]) ?? [:]
+        do {
+            let result = try await CapabilityApplicator.apply(
+                capabilityId: capabilityId,
+                to: URL(fileURLWithPath: projectRootPath),
+                parameters: parameters
+            )
+            var summary = "Added \(capabilityId)."
+            if !result.changedFiles.isEmpty {
+                summary += " Updated: " + result.changedFiles.map(\.lastPathComponent).joined(separator: ", ") + "."
+            }
+            if !result.alreadyPresent.isEmpty {
+                summary += " Already present: " + result.alreadyPresent.joined(separator: ", ") + "."
+            }
+            if let steps = result.manualSteps {
+                summary += "\n\nManual steps required:\n\(steps)"
+            }
+            return (summary, false)
+        } catch let err as CapabilityApplicatorError {
+            return (err.localizedDescription, true)
+        } catch {
+            return ("Failed to add capability: \(error.localizedDescription)", true)
+        }
+    }
+
+    private func handleRemoveCapability(input: [String: Any]) async -> (String, Bool) {
+        guard let capabilityId = input["capability"] as? String else {
+            return ("Missing 'capability' parameter", true)
+        }
+        guard let projectRootPath, !projectRootPath.isEmpty else {
+            return ("No project folder is open.", true)
+        }
+        do {
+            let result = try await CapabilityApplicator.remove(
+                capabilityId: capabilityId,
+                from: URL(fileURLWithPath: projectRootPath)
+            )
+            if result.removedKeys.isEmpty {
+                return ("\(capabilityId) was not present; nothing removed.", false)
+            }
+            var summary = "Removed \(capabilityId). Stripped: " + result.removedKeys.joined(separator: ", ") + "."
+            if let steps = result.manualSteps {
+                summary += "\n\nNote: \(steps)"
+            }
+            return (summary, false)
+        } catch let err as CapabilityApplicatorError {
+            return (err.localizedDescription, true)
+        } catch {
+            return ("Failed to remove capability: \(error.localizedDescription)", true)
         }
     }
 
