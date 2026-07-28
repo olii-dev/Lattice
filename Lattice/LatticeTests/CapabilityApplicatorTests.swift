@@ -268,6 +268,34 @@ import Foundation
         )
         #expect(result.removedKeys.contains("UIBackgroundModes"))
     }
+
+    @Test func applyPreservesExistingInfoPlistKeySettings() async throws {
+        // The template uses GENERATE_INFOPLIST_FILE = YES with INFOPLIST_KEY_* build settings for
+        // display name, launch screen generation, scene manifest, and orientations. Applying an
+        // array-valued capability (background_modes) flips generation off and creates a real
+        // Info.plist. Those existing settings MUST be carried into the new file, not silently lost.
+        let fixtureRoot = try MinimalProjectFixture.make()
+        defer { MinimalProjectFixture.tearDown(fixtureRoot) }
+
+        _ = try await CapabilityApplicator.apply(
+            capabilityId: "background_modes",
+            to: fixtureRoot,
+            parameters: ["UIBackgroundModes": ["audio"]]
+        )
+
+        let infoPlistURL = fixtureRoot.appendingPathComponent("LatticeTplApp/Info.plist")
+        let dict = try #require(NSDictionary(contentsOf: infoPlistURL) as? [String: Any])
+
+        // The requested capability key lands.
+        let modes = try #require(dict["UIBackgroundModes"] as? [String])
+        #expect(modes == ["audio"])
+
+        // Inherited INFOPLIST_KEY_* settings survive the generation flip.
+        #expect(dict["CFBundleDisplayName"] != nil, "CFBundleDisplayName must be carried over")
+        #expect(dict["UILaunchScreen_Generation"] != nil, "UILaunchScreen generation must be carried over")
+        #expect(dict["UIApplicationSceneManifest_Generation"] != nil, "scene manifest generation must be carried over")
+        #expect(dict["UISupportedInterfaceOrientations"] != nil, "supported orientations must be carried over")
+    }
 }
 
 /// Direct unit tests for `CapabilityApplicator.removeBuildSettingLine`. This is the regex-driven

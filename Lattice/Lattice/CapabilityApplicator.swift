@@ -352,6 +352,14 @@ enum CapabilityApplicator {
                 try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
                 plist = NSMutableDictionary()
             }
+            // We are about to flip GENERATE_INFOPLIST_FILE to NO and point Xcode at this file.
+            // Carry over any existing INFOPLIST_KEY_* build settings so they are not silently
+            // lost (Xcode stops honouring INFOPLIST_KEY_* once a real Info.plist takes over).
+            // Existing explicit plist keys already on disk take precedence over these.
+            let inherited = collectExistingInfoPlistKeySettings(pbxText: pbxText)
+            for (key, value) in inherited where plist[key] == nil {
+                plist[key] = value
+            }
             for entry in arrayEntries {
                 plist[entry.key] = entry.value
             }
@@ -548,6 +556,45 @@ enum CapabilityApplicator {
             return nil
         }
         return ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Collects every `INFOPLIST_KEY_<Key>` build setting from the app-target configs and returns
+    /// them as a plist dictionary keyed by the suffix (`<Key>`). The `INFOPLIST_KEY_` prefix is
+    /// Apple's mapping from a build setting to an Info.plist key. Values are coerced to plist
+    /// types: quoted booleans `YES`/`NO` → Bool; everything else stays a string. Used when
+    /// creating a fresh Info.plist so existing auto-generated keys survive the switch away from
+    /// `GENERATE_INFOPLIST_FILE = YES`.
+    private static func collectExistingInfoPlistKeySettings(pbxText: String) -> [String: Any] {
+        guard let configIDs = PbxprojEditor.applicationTargetConfigurationIDs(in: pbxText) else {
+            return [:]
+        }
+        var collected: [String: Any] = [:]
+        let prefix = "INFOPLIST_KEY_"
+        for id in configIDs {
+            guard let range = PbxprojEditor.blockRange(forConfigurationID: id, in: pbxText) else { continue }
+            let block = String(pbxText[range])
+            guard let regex = try? NSRegularExpression(pattern: prefix + "([A-Za-z0-9_]+)\\s*=\\s*([^;]+);") else { continue }
+            let ns = block as NSString
+            regex.enumerateMatches(in: block, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+                guard let match, match.numberOfRanges > 2 else { return }
+                let key = ns.substring(with: match.range(at: 1))
+                if collected[key] != nil { return } // first config wins; values should match across configs
+                let raw = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                collected[key] = coerceInfoPlistKeyValue(raw)
+            }
+        }
+        return collected
+    }
+
+    /// Coerces a raw pbxproj build-setting value string into the plist type Xcode would infer:
+    /// `YES`/`NO` → Bool, anything else → String (quotes stripped).
+    private static func coerceInfoPlistKeyValue(_ raw: String) -> Any {
+        let unquoted = PbxprojEditor.stripQuotes(raw)
+        switch unquoted {
+        case "YES": return true
+        case "NO": return false
+        default: return unquoted
+        }
     }
 
     /// Compares two plist values for equality across the types the applicator handles:
