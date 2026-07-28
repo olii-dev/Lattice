@@ -545,13 +545,18 @@ final class ChatViewModel: ObservableObject {
     @Published var isRunning = false
     /// Bumped only when the transcript should pin to the bottom (streaming, tools, send). Not used for unrelated layout.
     @Published private(set) var transcriptScrollToBottomToken: UInt = 0
+    /// Bumped when an `add_capability`/`remove_capability` tool call completes, so the
+    /// Capabilities inspector re-reads real project state from disk.
+    @Published var capabilityRefreshToken: Int = 0
     /// Parsed from the latest finalized assistant reply (Bundle / Team / version lines).
     @Published private(set) var pendingInspectorHints: AssistantInspectorHints?
     @Published private(set) var projectSummary: LatticeProjectSummary?
     @Published private(set) var livePhase: LatticeDirectorPhase?
 
     private let service = LLMService()
-    private let executor = ToolExecutor()
+    private var executor: ToolExecutor {
+        ToolExecutor(projectRootPath: scopedProjectPath.isEmpty ? nil : scopedProjectPath)
+    }
     private weak var consoleStore: LatticeConsoleStore?
     private var conversationHistory: [[String: Any]] = []
     private var agentTask: Task<Void, Never>?
@@ -1253,6 +1258,9 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
                 let (output, isError) = await executor.execute(name: toolName, input: input)
                 if toolName == "write_file", let u = writeUndo, !isError {
                     burstFileUndos.append(u)
+                }
+                if toolName == "add_capability" || toolName == "remove_capability" {
+                    capabilityRefreshToken += 1
                 }
                 consoleStore?.append(
                     output,
@@ -6579,6 +6587,17 @@ struct ProjectInspectorView: View {
                 }
             } footer: {
                 Text("Overrides DEVELOPMENT_TEAM and bundle ID when set; otherwise Account’s global Team ID applies.")
+            }
+
+            Section {
+                CapabilitySettingsView(
+                    projectRoot: URL(fileURLWithPath: selectedProjectPath),
+                    refreshToken: chatViewModel.capabilityRefreshToken
+                )
+            } header: {
+                Text("Capabilities")
+            } footer: {
+                Text("Add Apple capabilities with correct entitlements and project settings. Some require manual steps in the Apple Developer Portal.")
             }
         }
         .formStyle(.grouped)
