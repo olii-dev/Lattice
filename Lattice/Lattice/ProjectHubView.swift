@@ -469,6 +469,12 @@ private struct HubRecentRow: View {
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
+                            if let platform = project.platform {
+                                Image(systemName: platform.symbolName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .help(platform.label)
+                            }
                         }
                         Spacer(minLength: 8)
                         Text(relativeLabel)

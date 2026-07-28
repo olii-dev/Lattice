@@ -21,13 +21,20 @@ enum LLMProvider: String, CaseIterable, Identifiable {
     var models: [LLMModelOption] {
         switch self {
         case .anthropic: [
+            .init(id: "claude-opus-5", label: "Claude Opus 5", supportsImages: true),
+            .init(id: "claude-sonnet-5", label: "Claude Sonnet 5", supportsImages: true),
+            .init(id: "claude-fable-5", label: "Claude Fable 5", supportsImages: true),
+            .init(id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsImages: true),
             .init(id: "claude-opus-4-7", label: "Claude Opus 4.7", supportsImages: true),
             .init(id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", supportsImages: true),
-            .init(id: "claude-fable-5", label: "Claude Fable 5", supportsImages: true),
             .init(id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5", supportsImages: true),
             .init(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", supportsImages: true),
         ]
         case .openAI: [
+            .init(id: "gpt-5.6", label: "GPT-5.6", supportsImages: true),
+            .init(id: "gpt-5.6-terra", label: "GPT-5.6 Terra", supportsImages: true),
+            .init(id: "gpt-5.6-luna", label: "GPT-5.6 Luna", supportsImages: true),
+            .init(id: "gpt-5.5", label: "GPT-5.5", supportsImages: true),
             .init(id: "gpt-5.4", label: "GPT-5.4", supportsImages: true),
             .init(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", supportsImages: true),
             .init(id: "gpt-5.4-nano", label: "GPT-5.4 Nano", supportsImages: true),
@@ -38,6 +45,7 @@ enum LLMProvider: String, CaseIterable, Identifiable {
             .init(id: "gpt-4o-mini", label: "GPT-4o mini", supportsImages: true),
         ]
         case .zai: [
+            .init(id: "glm-5.2", label: "GLM-5.2", supportsImages: false),
             .init(id: "glm-4.7-flash", label: "GLM-4.7 Flash", supportsImages: false),
             .init(id: "glm-4.5-flash", label: "GLM-4.5 Flash", supportsImages: false),
             .init(id: "glm-4.5-air", label: "GLM-4.5 Air", supportsImages: false),
