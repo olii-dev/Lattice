@@ -287,8 +287,9 @@ enum PbxprojEditor {
 
     /// Finds the `PBXGroup` that contains the app's source `.swift` files.
     ///
-    /// Strategy: locate a known swift source file reference comment (e.g. `/* LatticeTplAppApp.swift */`),
-    /// then find the enclosing `PBXGroup` whose `children = (...)` list contains that id.
+    /// Strategy: scan every PBXGroup in the PBXGroup section and return the id of the first group
+    /// whose `children = (...)` list contains a `.swift` file reference. This is project-name
+    /// agnostic — it works for `LatticeTplAppApp.swift`, `CapBenchApp.swift`, or any other name.
     static func findSourceGroupID(in pbx: String) throws -> String {
         guard let pbxGroupEnd = pbx.range(of: "/* End PBXGroup section */") else {
             throw EntitlementsWiringError.noSourceGroup
@@ -299,9 +300,9 @@ enum PbxprojEditor {
         }
         let section = String(groupSection[pbxGroupBeginRange.upperBound...])
 
-        // Find a swift source file comment to anchor on. Prefer `App.swift`-style names, fall back
-        // to any `.swift` reference inside a PBXGroup's children list.
-        // We look for the group whose `children = (...)` contains a `.swift` entry.
+        // Walk each PBXGroup block. Return the id of the first one whose children list holds a
+        // `.swift` reference. In pbxproj a child looks like `<id> /* Name.swift */,`, so the
+        // closing comment text is `.swift */`.
         var searchStart = section.startIndex
         while searchStart < section.endIndex,
               let groupOpen = section[searchStart...].range(of: "= {") {
@@ -318,13 +319,12 @@ enum PbxprojEditor {
             let block = String(section[groupOpen.upperBound..<closeRange.lowerBound])
             if block.contains("isa = PBXGroup;"),
                let childrenRange = block.range(of: "children = (") {
-                // `block` is a standalone String, so we can search its tail directly without
-                // index-arithmetic against the original pbx string.
                 let afterParen = block[childrenRange.upperBound...]
                 if let closeParen = afterParen.range(of: ")") {
                     let children = String(afterParen[..<closeParen.lowerBound])
-                    if children.contains("/* LatticeTplAppApp.swift */")
-                        || children.contains(".swift /*") {
+                    // Match any swift source in the children list. The pbxproj comment for a swift
+                    // file ends with `.swift */`, e.g. `/* CapBenchApp.swift */`.
+                    if children.contains(".swift */") {
                         return id
                     }
                 }

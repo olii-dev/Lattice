@@ -134,6 +134,27 @@ import Testing
                "file-reference id \(fileRefID) must be inside the source group's children = (...) list")
     }
 
+    /// Regression test: `findSourceGroupID` must work on projects whose source group and swift
+    /// files are NOT named `LatticeTplApp` — e.g. a real Lattice-created app named "CapBench".
+    /// The old implementation anchored on the literal `LatticeTplAppApp.swift` and a malformed
+    /// `.swift /*` fallback that never matched, so it threw `noSourceGroup` for any renamed
+    /// project, breaking all entitlement-based capabilities.
+    @Test func ensureEntitlementsWorksOnRenamedProject() throws {
+        let result = try PbxprojEditor.ensureEntitlementsFileReference(
+            in: PbxprojFixtures.renamedProject,
+            relativePath: "CapBench/CapBench.entitlements"
+        )
+        #expect(result.wasModified, "entitlements wiring must succeed on a renamed (non-template) project")
+        // CODE_SIGN_ENTITLEMENTS set on both app-target configs.
+        let count = result.modifiedPbx.components(separatedBy: "CODE_SIGN_ENTITLEMENTS = ").count - 1
+        #expect(count == 2)
+        // The file reference actually landed in the source group's children list.
+        let fileRefID = try #require(result.fileReferenceID)
+        let childrenList = try sourceGroupChildrenList(in: result.modifiedPbx)
+        #expect(childrenList.contains(fileRefID),
+               "file-reference id must be inside the renamed project's source group children list")
+    }
+
     @Test func ensureEntitlementsIsIdempotent() throws {
         let first = try PbxprojEditor.ensureEntitlementsFileReference(
             in: PbxprojFixtures.iosTemplate,

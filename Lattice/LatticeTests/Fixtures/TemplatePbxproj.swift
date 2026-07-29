@@ -246,4 +246,11 @@ enum PbxprojFixtures {
 	rootObject = A10000080000000000000001 /* Project object */;
 }
 """#
+
+    /// The iOS template with every `LatticeTplApp` occurrence replaced by `CapBench`, simulating a
+    /// real Lattice-created project whose source group + swift file names are NOT the template
+    /// defaults. Used to guard against name-anchored heuristics in `findSourceGroupID`.
+    static let renamedProject: String = {
+        iosTemplate.replacingOccurrences(of: "LatticeTplApp", with: "CapBench")
+    }()
 }
