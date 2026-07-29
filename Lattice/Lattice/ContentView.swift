@@ -734,6 +734,16 @@ final class ChatViewModel: ObservableObject {
         transcriptScrollToBottomToken &+= 1
     }
 
+    /// Throttled scroll request for the streaming hot path. During SSE streaming the scroll fires
+    /// on every chunk (dozens/sec); an unthrottled scroll-to-bottom on every token is a major
+    /// source of UI jank. This coalesces to at most one scroll per `transcriptScrollMinInterval`.
+    private func requestTranscriptScrollToBottomThrottled() {
+        let now = Date()
+        guard now.timeIntervalSince(lastTranscriptScrollPulse) >= transcriptScrollMinInterval else { return }
+        lastTranscriptScrollPulse = now
+        transcriptScrollToBottomToken &+= 1
+    }
+
     private func noteTranscriptScrollIntent() {
         requestTranscriptScrollToBottom(immediate: false)
     }
@@ -2795,6 +2805,10 @@ struct ContentView: View {
         guard !text.isEmpty || !attachments.isEmpty else { return }
         input = ""
         composerImageAttachments.removeAll()
+        // Reset the composer to its minimum height immediately. The NSTextView's layout manager
+        // doesn't synchronously re-measure the now-empty text on the SwiftUI-driven updateNSView
+        // pass, so without this the box visually stays large until the next keystroke.
+        composerHeight = 42
         viewModel.send(text, attachments: attachments, apiKey: activeAPIKey, context: chatContext)
     }
 
