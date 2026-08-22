@@ -217,6 +217,20 @@ struct ToolExecutor {
 
     private static let webUserAgent = "Lattice/1.0 (macOS; built-in web tool)"
 
+    /// Cap on combined bash output fed back into the model context (~256KB).
+    private static let maxBashOutputCharacters = 262_144
+
+    /// bash runs inside the project root so model-relative paths resolve as expected;
+    /// with no project open, fall back to a scratch directory instead of the app's own CWD.
+    private var bashWorkingDirectory: URL {
+        let root = projectRootPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !root.isEmpty, FileManager.default.fileExists(atPath: root) {
+            return URL(fileURLWithPath: root, isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    }
+
     private func runBash(_ command: String) async -> (String, Bool) {
         let proc = Process()
         let outPipe = Pipe()
@@ -230,36 +244,73 @@ struct ToolExecutor {
         proc.environment = env
         proc.standardOutput = outPipe
         proc.standardError = errPipe
-        proc.currentDirectoryURL = URL(
-            fileURLWithPath: FileManager.default.currentDirectoryPath
-        )
+        proc.currentDirectoryURL = bashWorkingDirectory
 
-        return await withTaskCancellationHandler {
+        // Drain stdout/stderr continuously via readability handlers; reading them
+        // sequentially after termination deadlocks once output exceeds the OS pipe buffer.
+        let drainLock = NSLock()
+        var stdoutBuffer = Data()
+        var stderrBuffer = Data()
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            drainLock.lock()
+            stdoutBuffer.append(chunk)
+            drainLock.unlock()
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            drainLock.lock()
+            stderrBuffer.append(chunk)
+            drainLock.unlock()
+        }
+
+        do {
+            try proc.run()
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            return ("Failed to launch /bin/bash: \(error.localizedDescription)", true)
+        }
+
+        let terminationStatus: Int32 = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                guard !Task.isCancelled else {
-                    continuation.resume(returning: ("Cancelled", false))
-                    return
-                }
                 proc.terminationHandler = { p in
-                    let stdout = String(
-                        data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                    ) ?? ""
-                    let stderr = String(
-                        data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                    ) ?? ""
-                    let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
-                    let isError = p.terminationStatus != 0
-                    continuation.resume(returning: (combined.isEmpty ? "(no output)" : combined, isError))
-                }
-                do {
-                    try proc.run()
-                } catch {
-                    continuation.resume(returning: (error.localizedDescription, true))
+                    continuation.resume(returning: p.terminationStatus)
                 }
             }
         } onCancel: {
             proc.terminate()
         }
+
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        drainLock.lock()
+        let stdout = String(data: stdoutBuffer, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrBuffer, encoding: .utf8) ?? ""
+        drainLock.unlock()
+
+        let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+        let isError = terminationStatus != 0
+        guard !combined.isEmpty else { return ("(no output)", isError) }
+        return (Self.truncateBashOutput(combined), isError)
+    }
+
+    private static func truncateBashOutput(_ text: String) -> String {
+        guard text.count > maxBashOutputCharacters else { return text }
+        let headCount = maxBashOutputCharacters * 3 / 4
+        let tailCount = maxBashOutputCharacters - headCount
+        let omitted = text.count - maxBashOutputCharacters
+        let head = String(text.prefix(headCount))
+        let tail = String(text.suffix(tailCount))
+        return "\(head)\n…[output truncated, \(omitted) characters omitted]…\n\(tail)"
     }
 
     private func webSearch(

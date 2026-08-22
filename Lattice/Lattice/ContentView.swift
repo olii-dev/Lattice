@@ -618,7 +618,11 @@ final class ChatViewModel: ObservableObject {
         guard let selectedPoint = points.first(where: { $0.id == selectedPointId }) else { return }
 
         if let oid = selectedPoint.gitTreeOID, !oid.isEmpty {
-            LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+            let result = LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+            guard result.isSuccess else {
+                reportGitRestoreFailure(result, operation: "history checkpoint")
+                return
+            }
             let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
             LatticeGitWorkspaceCheckpoint.persistRetryBaseline(projectFingerprint: fp, oid: oid)
         }
@@ -661,7 +665,11 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: restoreRevision)
+        let rewindResult = LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: restoreRevision)
+        guard rewindResult.isSuccess else {
+            reportGitRestoreFailure(rewindResult, operation: "turn rewind")
+            return
+        }
         let fp = ChatSessionPersistence.projectStorageFingerprint(path: root)
         LatticeGitWorkspaceCheckpoint.persistRetryBaseline(projectFingerprint: fp, oid: restoreRevision)
 
@@ -765,6 +773,22 @@ final class ChatViewModel: ObservableObject {
         requestTranscriptScrollToBottom(immediate: true)
     }
 
+    /// Logs a failed git restore to the Console sheet and surfaces it inline in the transcript
+    /// without touching retry state.
+    private func reportGitRestoreFailure(_ result: LatticeGitWorkspaceCheckpoint.RestoreResult, operation: String) {
+        guard let detail = result.failureDetail else { return }
+        consoleStore?.appendLine(
+            "Git restore failed (\(operation)): \(detail)",
+            category: "build-error",
+            projectPath: scopedProjectPath
+        )
+        items.append(ChatItem(kind: .assistant(
+            "⚠️ Could not restore the workspace (\(operation)).\n\n\(detail)",
+            isStreaming: false
+        )))
+        requestTranscriptScrollToBottom(immediate: true)
+    }
+
     private func refreshBurstGitStartFromBaseline() {
         let root = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty else {
@@ -820,7 +844,11 @@ final class ChatViewModel: ObservableObject {
             return
         }
         if let root = pack.gitProjectRoot, let oid = pack.gitHeadOID, !root.isEmpty, !oid.isEmpty {
-            LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+            let result = LatticeGitWorkspaceCheckpoint.resetHardAndClean(worktree: root, revision: oid)
+            guard result.isSuccess else {
+                reportGitRestoreFailure(result, operation: "retry rollback")
+                return
+            }
         }
         for u in pack.fileUndos.reversed() {
             u.apply()

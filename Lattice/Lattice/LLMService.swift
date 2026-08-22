@@ -91,24 +91,43 @@ struct LLMService {
     private static let providerOverloadMaxAttempts = 4
     private static let providerOverloadRetryDelayNanoseconds: UInt64 = 15 * 1_000_000_000
 
-    private static func shouldRetryAfterTransientProviderFailure(_ error: Error) -> Bool {
-        if let e = error as? StreamError, case .apiError(let raw) = e {
-            let t = raw.lowercased()
-            if t.contains("1305") { return true }
-            if t.contains("1234") { return true }
-            if t.contains("overloaded") { return true }
-            if t.contains("temporarily overloaded") { return true }
-            if t.contains("internal network failure") { return true }
-            if t.contains("rate_limit") || t.contains("rate limit") { return true }
+    /// HTTP statuses transient enough to warrant an automatic retry.
+    /// 529 = Anthropic "overloaded_error", 408 = request timeout, 429 = rate limited.
+    private static let retryableStatusCodes: Set<Int> = [408, 429, 500, 502, 503, 504, 529]
+
+    /// Network-layer failures worth retrying (mid-stream drops, dead connections).
+    private static let retryableURLErrorCodes: Set<URLError.Code> = [
+        .timedOut,
+        .networkConnectionLost,
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .dnsLookupFailed,
+        .notConnectedToInternet,
+    ]
+
+    static func shouldRetryAfterTransientProviderFailure(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return retryableURLErrorCodes.contains(urlError.code)
         }
-        let d = error.localizedDescription.lowercased()
-        return d.contains("1305")
-            || d.contains("1234")
-            || d.contains("overloaded")
-            || d.contains("temporarily overloaded")
-            || d.contains("internal network failure")
-            || d.contains("rate_limit")
-            || d.contains("rate limit")
+        // Fall back to body-text markers only inside provider error payloads —
+        // never against arbitrary error descriptions, where substrings like
+        // "1305" or "1234" can match unrelated content.
+        guard let e = error as? StreamError, case .apiError(let raw, let statusCode) = e else {
+            return false
+        }
+        // A concrete status decides on its own; body markers only matter when no
+        // usable HTTP status was captured.
+        if let statusCode {
+            return retryableStatusCodes.contains(statusCode)
+        }
+        let t = raw.lowercased()
+        if t.contains("1305") { return true }
+        if t.contains("1234") { return true }
+        if t.contains("overloaded") { return true }
+        if t.contains("temporarily overloaded") { return true }
+        if t.contains("internal network failure") { return true }
+        if t.contains("rate_limit") || t.contains("rate limit") { return true }
+        return false
     }
 
     private static let latticeToolDefinitions: [[String: Any]] = [
@@ -314,7 +333,7 @@ struct LLMService {
                         var data = Data()
                         for try await byte in bytes { data.append(byte) }
                         let msg = parseAnthropicError(data) ?? "HTTP \(http.statusCode)"
-                        throw StreamError.apiError(msg)
+                        throw StreamError.apiError(message: msg, statusCode: http.statusCode)
                     }
 
                     var blocks: [Int: ContentBlock] = [:]
@@ -443,7 +462,7 @@ struct LLMService {
                         var data = Data()
                         for try await byte in bytes { data.append(byte) }
                         let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-                        throw StreamError.apiError(msg)
+                        throw StreamError.apiError(message: msg, statusCode: http.statusCode)
                     }
 
                     var blocks: [Int: ContentBlock] = [:]
@@ -881,7 +900,10 @@ struct LLMService {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw StreamError.apiError(parseAnthropicError(data) ?? "HTTP \(http.statusCode)")
+            throw StreamError.apiError(
+                message: parseAnthropicError(data) ?? "HTTP \(http.statusCode)",
+                statusCode: http.statusCode
+            )
         }
 
         struct Response: Decodable {
@@ -920,7 +942,10 @@ struct LLMService {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw StreamError.apiError(String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)")
+            throw StreamError.apiError(
+                message: String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)",
+                statusCode: http.statusCode
+            )
         }
 
         struct Response: Decodable {

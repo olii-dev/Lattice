@@ -87,9 +87,21 @@ struct SSEDelta: Decodable {
 // MARK: - Errors
 
 enum StreamError: LocalizedError {
-    case apiError(String)
-    var errorDescription: String? {
-        if case .apiError(let msg) = self { return APIErrorFormatting.friendlyMessage(from: msg) }
+    /// HTTP status code from the failing response when available; nil for
+    /// provider-reported failures that never produced a usable HTTP status.
+    case apiError(message: String, statusCode: Int?)
+
+    var rawMessage: String {
+        if case .apiError(let message, _) = self { return message }
+        return "Unknown API error."
+    }
+
+    var statusCode: Int? {
+        if case .apiError(_, let statusCode) = self { return statusCode }
         return nil
+    }
+
+    var errorDescription: String? {
+        APIErrorFormatting.friendlyMessage(from: rawMessage)
     }
 }

@@ -20,7 +20,7 @@ enum APIErrorFormatting {
     }
 
     static func userFacingMessage(from error: Error) -> String {
-        if let stream = error as? StreamError, case .apiError(let raw) = stream {
+        if let stream = error as? StreamError, case .apiError(let raw, _) = stream {
             return friendlyMessage(from: raw)
         }
         return error.localizedDescription
