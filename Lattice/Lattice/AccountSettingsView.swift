@@ -12,6 +12,7 @@ struct AccountSettingsView: View {
     @AppStorage("selectedProvider") private var selectedProvider = "anthropic"
     @AppStorage("selectedSimulatorID") private var selectedSimulatorID = ""
     @AppStorage("selectedModel") private var selectedModel = "claude-sonnet-4-6"
+    @AppStorage("latticeUseClaudeSubscription") private var useClaudeSubscription = false
     @AppStorage("latticeLocalRunDestination") private var latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSSimulator.rawValue
     @AppStorage("latticeAppearancePreference") private var latticeAppearancePreference = "system"
     @AppStorage("latticeShowComposerTips") private var latticeShowComposerTips = true
@@ -151,71 +152,7 @@ struct AccountSettingsView: View {
                 Text("Applies to the main Lattice window. File review pauses the AI before it writes a file, so you can approve each change.")
             }
 
-            Section {
-                Picker("Provider", selection: $selectedProvider) {
-                    Section("Built-in") {
-                        ForEach(LLMProvider.allCases) { p in
-                            Text(p.displayName).tag(p.rawValue)
-                        }
-                    }
-                    if !customProviderStore.providers.isEmpty {
-                        Section("Custom") {
-                            ForEach(customProviderStore.providers) { provider in
-                                Text(provider.name).tag(provider.selectionID)
-                            }
-                        }
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(generationState.isGenerating)
-
-                HStack(alignment: .center, spacing: 10) {
-                    SecureField(keyFieldPrompt, text: keyBinding)
-                        .textFieldStyle(.roundedBorder)
-                    if currentKeyNonEmpty {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(.green)
-                            .symbolRenderingMode(.hierarchical)
-                            .accessibilityLabel("API key saved on this device")
-                    }
-                }
-                if isCustomSelection {
-                    Text("Local providers like Ollama and LM Studio don't need a key — leave this empty.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker("Model", selection: $selectedModel) {
-                    if activeModelOptions.isEmpty {
-                        Text("No models — add some").tag("")
-                    }
-                    ForEach(activeModelOptions) { model in
-                        Text(model.label).tag(model.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(generationState.isGenerating)
-
-                if isCustomSelection, let custom = activeCustomProvider {
-                    Button("Edit “\(custom.name)”…") {
-                        customProviderEditor = custom
-                    }
-                }
-
-                Button("Add a custom provider…") {
-                    customProviderEditor = CustomProvider(name: "", baseURL: "", protocolKind: .openAICompatible)
-                }
-
-                if currentProvider == .zai, !isCustomSelection {
-                    Toggle("GLM Coding Plan API", isOn: $zaiUseCodingEndpoint)
-                        .disabled(generationState.isGenerating)
-                }
-            } header: {
-                Text("AI account")
-            } footer: {
-                Text("Keys stay on this device and are sent only to the selected provider.")
-            }
+            aiAccountSection
 
             Section {
                 LabeledContent("Current run target") {
@@ -355,8 +292,121 @@ struct AccountSettingsView: View {
         }
     }
 
+    // MARK: - AI account section
+
+    /// Extracted from the form body to keep each SwiftUI expression small enough
+    /// for the type-checker.
+    private var aiAccountSection: some View {
+        Section {
+            Picker("Provider", selection: $selectedProvider) {
+                Section("Built-in") {
+                    ForEach(LLMProvider.allCases) { p in
+                        Text(p.displayName).tag(p.rawValue)
+                    }
+                }
+                if !customProviderStore.providers.isEmpty {
+                    Section("Custom") {
+                        ForEach(customProviderStore.providers) { provider in
+                            Text(provider.name).tag(provider.selectionID)
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(generationState.isGenerating)
+
+            apiKeyField
+
+            if currentProvider == .anthropic {
+                Toggle("Use my Claude subscription (Pro/Max)", isOn: $useClaudeSubscription)
+                if useClaudeSubscription {
+                    claudeSubscriptionTokenFields
+                }
+            }
+
+            modelPicker
+
+            if isCustomSelection, let custom = activeCustomProvider {
+                Button("Edit “\(custom.name)”…") {
+                    customProviderEditor = custom
+                }
+            }
+
+            Button("Add a custom provider…") {
+                customProviderEditor = CustomProvider(name: "", baseURL: "", protocolKind: .openAICompatible)
+            }
+
+            if currentProvider == .zai, !isCustomSelection {
+                Toggle("GLM Coding Plan API", isOn: $zaiUseCodingEndpoint)
+                    .disabled(generationState.isGenerating)
+            }
+        } header: {
+            Text("AI account")
+        } footer: {
+            Text("Keys stay on this device and are sent only to the selected provider.")
+        }
+    }
+
+    @ViewBuilder
+    private var apiKeyField: some View {
+        HStack(alignment: .center, spacing: 10) {
+            SecureField(keyFieldPrompt, text: keyBinding)
+                .textFieldStyle(.roundedBorder)
+            if currentKeyNonEmpty {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.green)
+                    .symbolRenderingMode(.hierarchical)
+                    .accessibilityLabel("API key saved on this device")
+            }
+        }
+        if isCustomSelection {
+            Text("Local providers like Ollama and LM Studio don't need a key — leave this empty.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var modelPicker: some View {
+        Picker("Model", selection: $selectedModel) {
+            if activeModelOptions.isEmpty {
+                Text("No models — add some").tag("")
+            }
+            ForEach(activeModelOptions) { model in
+                Text(model.label).tag(model.id)
+            }
+        }
+        .pickerStyle(.menu)
+        .disabled(generationState.isGenerating)
+    }
+
+    private var claudeSubscriptionTokenFields: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 10) {
+                SecureField("Paste subscription token", text: claudeSubscriptionTokenBinding)
+                    .textFieldStyle(.roundedBorder)
+                if !keyStore.claudeSubscriptionToken.isEmpty {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                }
+            }
+            Text("In Terminal, run “claude setup-token” (requires Claude Code), then paste the token here. Uses your existing subscription instead of pay-per-token billing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var keyFieldPrompt: String {
         isCustomSelection ? "API key (optional)" : "API key"
+    }
+
+    private var claudeSubscriptionTokenBinding: Binding<String> {
+        Binding<String>(
+            get: { keyStore.claudeSubscriptionToken },
+            set: { keyStore.claudeSubscriptionToken = $0 }
+        )
     }
 
     private var keyBinding: Binding<String> {

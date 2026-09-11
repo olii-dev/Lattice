@@ -315,7 +315,11 @@ struct LLMService {
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    if !apiKey.isEmpty {
+                    if context.claudeSubscriptionAuth {
+                        // Subscription OAuth (claude setup-token / Pro or Max login).
+                        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+                    } else if !apiKey.isEmpty {
                         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
                     }
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -910,7 +914,8 @@ struct LLMService {
         provider: LLMProvider,
         zaiUseCodingEndpoint: Bool = true,
         maxOutputTokens: Int = 512,
-        customProvider: CustomProvider? = nil
+        customProvider: CustomProvider? = nil,
+        claudeSubscriptionAuth: Bool = false
     ) async throws -> String {
         let cap = min(8192, max(64, maxOutputTokens))
         if let custom = customProvider {
@@ -930,7 +935,10 @@ struct LLMService {
         }
         switch provider {
         case .anthropic:
-            return try await completeAnthropic(prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap)
+            return try await completeAnthropic(
+                prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap,
+                claudeSubscriptionAuth: claudeSubscriptionAuth
+            )
         case .openAI, .zai:
             return try await completeOpenAI(
                 prompt: prompt,
@@ -948,12 +956,16 @@ struct LLMService {
         apiKey: String,
         model: String,
         maxTokens: Int,
-        endpointURLOverride: URL? = nil
+        endpointURLOverride: URL? = nil,
+        claudeSubscriptionAuth: Bool = false
     ) async throws -> String {
         var request = URLRequest(url: endpointURLOverride ?? LLMProvider.anthropic.endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !apiKey.isEmpty {
+        if claudeSubscriptionAuth {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        } else if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         }
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")

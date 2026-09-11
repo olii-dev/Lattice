@@ -59,6 +59,16 @@ final class APIKeyStore: ObservableObject {
         Self.deleteAccount("custom.\(id.uuidString)")
     }
 
+    // MARK: Claude subscription OAuth token
+
+    /// Long-lived OAuth token from `claude setup-token` (Claude Pro/Max/Team/Enterprise).
+    var claudeSubscriptionToken: String {
+        get { Self.readAccount(Self.claudeSubscriptionAccount) }
+        set { Self.write(newValue.trimmingCharacters(in: .whitespacesAndNewlines), account: Self.claudeSubscriptionAccount) }
+    }
+
+    private static let claudeSubscriptionAccount = "claude-subscription"
+
     private static func account(for provider: LLMProvider) -> Account {
         switch provider {
         case .anthropic: return .anthropic

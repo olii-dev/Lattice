@@ -241,6 +241,9 @@ struct ChatContext: Equatable {
     let projectSummary: LatticeProjectSummary?
     /// Resolved custom provider when `provider` is `"custom:<uuid>"`.
     var customProvider: CustomProvider?
+    /// When true and provider is Anthropic, authenticate as Bearer OAuth
+    /// (Claude subscription token) instead of an `x-api-key`.
+    var claudeSubscriptionAuth: Bool = false
 
     static func == (lhs: ChatContext, rhs: ChatContext) -> Bool {
         lhs.runTarget == rhs.runTarget &&
@@ -254,7 +257,8 @@ struct ChatContext: Equatable {
         lhs.bundleIdentifierOverride == rhs.bundleIdentifierOverride &&
         lhs.developmentTeam == rhs.developmentTeam &&
         lhs.projectSummary == rhs.projectSummary &&
-        lhs.customProvider == rhs.customProvider
+        lhs.customProvider == rhs.customProvider &&
+        lhs.claudeSubscriptionAuth == rhs.claudeSubscriptionAuth
     }
 
     var messagePrefix: String? {
@@ -741,8 +745,16 @@ struct ContentView: View {
         if let custom = activeCustomProvider {
             return keyStore.customKey(id: custom.id)
         }
-        return keyStore.key(for: LLMProvider(rawValue: selectedProvider) ?? .anthropic)
+        let provider = LLMProvider(rawValue: selectedProvider) ?? .anthropic
+        if provider == .anthropic, useClaudeSubscription {
+            return keyStore.claudeSubscriptionToken
+        }
+        return keyStore.key(for: provider)
     }
+
+    /// When on (Anthropic selected), the Claude subscription OAuth token is used
+    /// instead of a pay-per-token API key.
+    @AppStorage("latticeUseClaudeSubscription") private var useClaudeSubscription = false
 
     private var activeCustomProvider: CustomProvider? {
         customProviderStore.provider(selectionID: selectedProvider)
@@ -751,6 +763,9 @@ struct ContentView: View {
     /// True when any provider (built-in or custom) has a key configured.
     private var hasAnyAPIKeyConfigured: Bool {
         if LLMProvider.allCases.contains(where: { !keyStore.key(for: $0).isEmpty }) {
+            return true
+        }
+        if !keyStore.claudeSubscriptionToken.isEmpty {
             return true
         }
         return customProviderStore.providers.contains { !keyStore.customKey(id: $0.id).isEmpty }
@@ -2631,7 +2646,8 @@ struct ContentView: View {
             bundleIdentifierOverride: effectiveBundleIdentifierForContext,
             developmentTeam: resolvedDevelopmentTeam,
             projectSummary: viewModel.projectSummary,
-            customProvider: activeCustomProvider
+            customProvider: activeCustomProvider,
+            claudeSubscriptionAuth: selectedProviderOption == .anthropic && useClaudeSubscription
         )
     }
 
