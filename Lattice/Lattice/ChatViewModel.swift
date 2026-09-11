@@ -930,7 +930,6 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
         case "bash":           return "$ \(obj["command"] as? String ?? "")"
         case "read_file":      return "cat \(obj["path"] as? String ?? "")"
         case "write_file":     return "→ \(obj["path"] as? String ?? "")"
-        case "open_spec_docs": return obj["change_name"] as? String ?? ""
         default:               return json
         }
     }

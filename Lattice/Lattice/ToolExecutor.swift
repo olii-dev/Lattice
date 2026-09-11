@@ -90,9 +90,6 @@ struct ToolExecutor {
                 return (error.localizedDescription, true)
             }
 
-        case "open_spec_docs":
-            return ("Spec docs viewer is not available. Use read_file to inspect documents instead.", true)
-
         case "web_search":
             guard let query = input["query"] as? String else {
                 return ("Missing 'query' parameter", true)
