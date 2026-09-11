@@ -52,6 +52,16 @@ struct PlistEntry: Equatable {
     }
 }
 
+/// A starter file the applicator writes into the project when a capability is applied.
+/// Seed files are created only when missing — the applicator never overwrites user edits,
+/// and removal never deletes them.
+struct CapabilitySeedFile: Equatable {
+    /// Path relative to the project root. Supports the `$(AppName)` placeholder.
+    let relativePath: String
+    /// File contents, written verbatim.
+    let contents: String
+}
+
 /// A complete description of an Apple capability's file-side requirements.
 /// Pure data — no I/O. The applicator consumes it.
 struct AppleCapability: Identifiable, Equatable {
@@ -61,6 +71,7 @@ struct AppleCapability: Identifiable, Equatable {
     let entitlements: [EntitlementEntry]
     let infoPlistKeys: [PlistEntry]
     let frameworks: [String]
+    var seedFiles: [CapabilitySeedFile]
     let provisioningNotes: String?
     let applicablePlatforms: Set<ApplePlatform>
 }
@@ -80,6 +91,7 @@ enum AppleCapabilityCatalog {
         ],
         infoPlistKeys: [],
         frameworks: [],
+        seedFiles: [],
         provisioningNotes: "Create the App Group in the Apple Developer Portal (Identifiers → App Groups), then enable it under Xcode → Signing & Capabilities for your app and any extensions that share it.",
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
@@ -98,6 +110,7 @@ enum AppleCapabilityCatalog {
             PlistEntry(key: "UIBackgroundModes", value: ["remote-notification"])
         ],
         frameworks: ["UserNotifications.framework"],
+        seedFiles: [],
         provisioningNotes: "Enable the Push Notifications capability in the Apple Developer Portal for your App ID, and upload an APNs authentication key (or certificate) at developer.apple.com → Account → Certificates, Identifiers & Profiles → Keys.",
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
@@ -109,6 +122,7 @@ enum AppleCapabilityCatalog {
         entitlements: [],
         infoPlistKeys: [],
         frameworks: ["StoreKit.framework"],
+        seedFiles: [],
         provisioningNotes: "Configure your in-app purchases and subscriptions in App Store Connect → Your App → In-App Purchases. No entitlement key is required, but the In-App Purchase capability must be enabled for your App ID in the Developer Portal.",
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
@@ -125,6 +139,7 @@ enum AppleCapabilityCatalog {
         ],
         infoPlistKeys: [],
         frameworks: [],
+        seedFiles: [],
         provisioningNotes: "Enable the Keychain Sharing capability in Xcode → Signing & Capabilities. The access group prefix $(AppIdentifierPrefix) is replaced at build time with your team's identifier.",
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
@@ -138,8 +153,71 @@ enum AppleCapabilityCatalog {
             PlistEntry(key: "UIBackgroundModes", value: "$(UIBackgroundModes)")
         ],
         frameworks: [],
+        seedFiles: [],
         provisioningNotes: nil,
         applicablePlatforms: [.iOS]
+    )
+
+    static let swiftdata = AppleCapability(
+        id: "swiftdata",
+        displayName: "SwiftData (Local Database)",
+        summary: "Persist app data locally with SwiftData — models, relationships, and queries.",
+        entitlements: [],
+        infoPlistKeys: [],
+        frameworks: ["SwiftData.framework"],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)/SampleData.swift",
+                contents: """
+                import Foundation
+                import SwiftData
+
+                // Starter model for SwiftData. Rename it, add properties, or add more
+                // @Model classes — SwiftData persists them automatically once a
+                // ModelContainer is attached (usually via .modelContainer(...) on the
+                // App struct or your root view).
+                @Model
+                final class SampleItem {
+                    var title: String
+                    var detail: String
+                    var createdAt: Date
+                    var isFavorite: Bool
+
+                    init(title: String, detail: String = "", createdAt: Date = .now, isFavorite: Bool = false) {
+                        self.title = title
+                        self.detail = detail
+                        self.createdAt = createdAt
+                        self.isFavorite = isFavorite
+                    }
+                }
+                """
+            )
+        ],
+        provisioningNotes: nil,
+        applicablePlatforms: [.iOS, .macOS, .watchOS]
+    )
+
+    static let cloudkitSync = AppleCapability(
+        id: "cloudkit_sync",
+        displayName: "iCloud Sync (CloudKit)",
+        summary: "Sync app data across the user's devices via iCloud (CloudKit), incl. SwiftData sync.",
+        entitlements: [
+            EntitlementEntry(
+                key: "com.apple.developer.icloud-services",
+                value: .stringArray(["CloudKit"])
+            ),
+            EntitlementEntry(
+                key: "com.apple.developer.icloud-container-identifiers",
+                value: .placeholder("$(iCloudContainerIdentifiers)")
+            )
+        ],
+        infoPlistKeys: [
+            PlistEntry(key: "UIBackgroundModes", value: ["remote-notification"])
+        ],
+        frameworks: ["CloudKit.framework"],
+        seedFiles: [],
+        provisioningNotes: "Enable iCloud (CloudKit) for your App ID in the Apple Developer Portal, then pick or create the container under Xcode → Signing & Capabilities → iCloud. Devices must be signed into iCloud for syncing to work.",
+        applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
 
     /// All supported capabilities, in display order.
@@ -149,6 +227,8 @@ enum AppleCapabilityCatalog {
         storekit,
         keychainSharing,
         backgroundModes,
+        swiftdata,
+        cloudkitSync,
     ]
 
     /// Look up a capability by id. Returns nil if unknown.

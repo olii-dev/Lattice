@@ -109,13 +109,15 @@ enum CapabilityApplicator {
         var changedFiles: Set<URL> = []
         var alreadyPresent: [String] = []
 
+        // Resolve the app target name once; used by entitlements wiring and seed files.
+        let appName = try appNameFromPbxproj(pbxText)
+
         // 3. Resolve placeholders.
         let resolvedEntitlements = resolveEntitlements(capability.entitlements, parameters: parameters)
         let resolvedPlistEntries = resolvePlistEntries(capability.infoPlistKeys, parameters: parameters)
 
         // 4. Entitlements.
         if !resolvedEntitlements.isEmpty {
-            let appName = try appNameFromPbxproj(pbxText)
             let entRelPath = "\(appName)/\(appName).entitlements"
             let entURL = try ensureEntitlementsFile(pbxText: &pbxText, projectRoot: projectRoot, relPath: entRelPath)
             let mergeResult = try mergeEntitlements(into: entURL, entries: resolvedEntitlements)
@@ -130,6 +132,27 @@ enum CapabilityApplicator {
             pbxText: &pbxText
         )
         changedFiles.formUnion(plistChangedFiles)
+
+        // 5.5 Seed files — created only when missing; existing files are never touched
+        // (they may contain user edits by now) and removal never deletes them.
+        for seed in capability.seedFiles {
+            let relPath = seed.relativePath
+                .replacingOccurrences(of: "$(AppName)", with: appName)
+            let seedURL = projectRoot.appendingPathComponent(relPath)
+            guard !FileManager.default.fileExists(atPath: seedURL.path) else { continue }
+            do {
+                try FileManager.default.createDirectory(
+                    at: seedURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try seed.contents.write(to: seedURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw CapabilityApplicatorError.entitlementsWriteFailed(
+                    "Could not write seed file \(relPath): \(error.localizedDescription)"
+                )
+            }
+            changedFiles.insert(seedURL)
+        }
 
         // 6. Write the modified pbxproj if it changed.
         if pbxText != originalPbx {
@@ -172,7 +195,8 @@ enum CapabilityApplicator {
 
     /// Extracts the application target's name (the `name = X;` in the PBXNativeTarget application
     /// block). Throws `noApplicationTarget` if the app target or its name cannot be found.
-    private static func appNameFromPbxproj(_ pbx: String) throws -> String {
+    /// Internal so `CapabilityStatusChecker` can resolve `$(AppName)` seed-file paths too.
+    static func appNameFromPbxproj(_ pbx: String) throws -> String {
         guard let productTypeRange = pbx.range(of: "productType = \"com.apple.product-type.application\";") else {
             throw CapabilityApplicatorError.noApplicationTarget
         }

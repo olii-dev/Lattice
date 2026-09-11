@@ -17,9 +17,10 @@ struct CapabilityStatus {
 /// - every declared Info.plist key exists in the on-disk `Info.plist` OR as an
 ///   `INFOPLIST_KEY_<key>` build setting in pbxproj.
 ///
-/// Capabilities with no file-side markers (empty entitlements AND empty plist keys — e.g.
-/// StoreKit, which has only a framework dependency) cannot be detected and will not appear in
-/// `CapabilityStatus.activeCapabilities`.
+/// Capabilities with no entitlement/plist markers fall back to seed-file detection:
+/// they count as active once any seeded file exists on disk (e.g. SwiftData's sample
+/// model). Capabilities with neither kind of marker (e.g. StoreKit) are undetectable
+/// and never appear in `CapabilityStatus.activeCapabilities`.
 enum CapabilityStatusChecker {
 
     /// Reports which catalog capabilities are currently active in the project at `projectRoot`.
@@ -46,8 +47,14 @@ enum CapabilityStatusChecker {
             let entKeys = capability.entitlements.map { $0.key }
             let plistKeys = capability.infoPlistKeys.map { $0.key }
 
-            // Undetectable: no file-side markers at all.
-            if entKeys.isEmpty && plistKeys.isEmpty { continue }
+            // No entitlement/plist markers: fall back to seed-file markers
+            // (a capability counts as active once any of its seeded files exist).
+            if entKeys.isEmpty && plistKeys.isEmpty {
+                if seedFileMarkerPresent(capability, projectRoot: projectRoot, pbx: pbxText) {
+                    active.insert(capability.id)
+                }
+                continue
+            }
 
             // ALL entitlement keys must be present in the entitlements dict.
             if !entKeys.isEmpty {
@@ -71,6 +78,20 @@ enum CapabilityStatusChecker {
     }
 
     // MARK: - Load helpers
+
+    /// True when any of the capability's seed files exists on disk (resolving `$(AppName)`).
+    private static func seedFileMarkerPresent(
+        _ capability: AppleCapability,
+        projectRoot: URL,
+        pbx: String
+    ) -> Bool {
+        guard !capability.seedFiles.isEmpty else { return false }
+        guard let appName = try? CapabilityApplicator.appNameFromPbxproj(pbx) else { return false }
+        return capability.seedFiles.contains { seed in
+            let rel = seed.relativePath.replacingOccurrences(of: "$(AppName)", with: appName)
+            return FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(rel).path)
+        }
+    }
 
     /// Loads the project's `.entitlements` plist as a dictionary. Returns nil when no
     /// `CODE_SIGN_ENTITLEMENTS` setting is present, the resolved path does not exist, or the

@@ -39,6 +39,7 @@ struct CapabilitySettingsView: View {
     @State private var appGroupInput: String = ""
     @State private var apsEnvironment: String = "development"
     @State private var keychainGroupInput: String = ""
+    @State private var iCloudContainerInput: String = ""
     @State private var backgroundModes: Set<String> = []
 
     /// The UIBackgroundModes values offered in the UI. Covers the common cases; the user can
@@ -150,6 +151,18 @@ struct CapabilitySettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption.monospaced())
             }
+        case "cloudkit_sync":
+            VStack(alignment: .leading, spacing: 4) {
+                Text("iCloud container identifiers (comma-separated, optional)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                TextField("iCloud.com.example.app", text: $iCloudContainerInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption.monospaced())
+                Text("Leave empty to use the default container.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         case "background_modes":
             VStack(alignment: .leading, spacing: 4) {
                 Text("Background modes")
@@ -223,6 +236,12 @@ struct CapabilitySettingsView: View {
             return ["KeychainAccessGroup": keychainGroupInput.trimmingCharacters(in: .whitespacesAndNewlines)]
         case "background_modes":
             return ["UIBackgroundModes": Array(backgroundModes).sorted()]
+        case "cloudkit_sync":
+            let containers = iCloudContainerInput
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return containers.isEmpty ? [:] : ["iCloudContainerIdentifiers": containers]
         default:
             return [:]
         }

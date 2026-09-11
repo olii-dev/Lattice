@@ -2,8 +2,26 @@ import Testing
 @testable import Lattice
 
 @Suite struct AppleCapabilityCatalogTests {
-    @Test func catalogHasFiveCapabilities() {
-        #expect(AppleCapabilityCatalog.all.count == 5)
+    @Test func catalogHasSevenCapabilities() {
+        #expect(AppleCapabilityCatalog.all.count == 7)
+    }
+
+    @Test func swiftdataCapabilityHasSeedFileAndNoEntitlements() {
+        let cap = AppleCapabilityCatalog.capability(id: "swiftdata")!
+        #expect(cap.entitlements.isEmpty)
+        #expect(cap.infoPlistKeys.isEmpty)
+        #expect(cap.seedFiles.count == 1)
+        #expect(cap.seedFiles[0].relativePath == "$(AppName)/SampleData.swift")
+        #expect(cap.seedFiles[0].contents.contains("@Model"))
+        #expect(cap.seedFiles[0].contents.contains("import SwiftData"))
+    }
+
+    @Test func cloudkitSyncDeclaresIcloudEntitlements() {
+        let cap = AppleCapabilityCatalog.capability(id: "cloudkit_sync")!
+        #expect(cap.entitlements.contains { $0.key == "com.apple.developer.icloud-services" })
+        #expect(cap.entitlements.contains { $0.key == "com.apple.developer.icloud-container-identifiers" })
+        #expect(cap.infoPlistKeys.contains { $0.key == "UIBackgroundModes" })
+        #expect(cap.provisioningNotes != nil)
     }
 
     @Test func capabilityIDsAreUnique() {
