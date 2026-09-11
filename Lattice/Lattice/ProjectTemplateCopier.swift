@@ -121,6 +121,8 @@ enum ProjectTemplateCopier {
         if let icon = appIcon {
             try ProjectAppIconWriter.write(image: icon, projectRoot: root)
         }
+        // Best-effort git init so checkpoints and source control work from day one.
+        try? SourceControlService.initializeRepository(projectRoot: root)
         return root
     }
 

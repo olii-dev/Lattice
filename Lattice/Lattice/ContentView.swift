@@ -730,6 +730,7 @@ struct ContentView: View {
     @State private var showConsoleSheet = false
     @State private var showHistoryRestore = false
     @State private var showPublishSheet = false
+    @State private var showSourceControlSheet = false
     @State private var showOnboarding = false
     @State private var isCapturingScreenshot = false
     @State private var consoleSearch = ""
@@ -1254,6 +1255,18 @@ struct ContentView: View {
                 .disabled(viewModel.isRunning || !hasSelectedProject)
                 .controlSize(.small)
             }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showSourceControlSheet = true
+                } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .help("Source Control")
+                .disabled(viewModel.isRunning || !hasSelectedProject)
+                .controlSize(.small)
+            }
         }
         if !showProjectHub {
             ToolbarItem(placement: .automatic) {
@@ -1394,6 +1407,9 @@ struct ContentView: View {
                         consoleStore.appendLine(line, category: "publish", projectPath: selectedProjectPath)
                     }
                 )
+            }
+            .sheet(isPresented: $showSourceControlSheet) {
+                SourceControlSheet(projectPath: selectedProjectPath)
             }
             .sheet(isPresented: $showOnboarding) {
                 onboardingSheet
