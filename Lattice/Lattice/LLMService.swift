@@ -21,53 +21,30 @@ enum LLMProvider: String, CaseIterable, Identifiable {
     var models: [LLMModelOption] {
         switch self {
         case .anthropic: [
+            .init(id: "claude-fable-5-1", label: "Claude Fable 5.1", supportsImages: true),
             .init(id: "claude-opus-5", label: "Claude Opus 5", supportsImages: true),
             .init(id: "claude-sonnet-5", label: "Claude Sonnet 5", supportsImages: true),
-            .init(id: "claude-fable-5", label: "Claude Fable 5", supportsImages: true),
-            .init(id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsImages: true),
-            .init(id: "claude-opus-4-7", label: "Claude Opus 4.7", supportsImages: true),
-            .init(id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", supportsImages: true),
-            .init(id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5", supportsImages: true),
-            .init(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", supportsImages: true),
         ]
         case .openAI: [
-            .init(id: "gpt-5.6", label: "GPT-5.6", supportsImages: true),
+            .init(id: "gpt-6-astra", label: "GPT-6 Astra", supportsImages: true),
+            .init(id: "gpt-5.6-sol", label: "GPT-5.6 Sol", supportsImages: true),
             .init(id: "gpt-5.6-terra", label: "GPT-5.6 Terra", supportsImages: true),
             .init(id: "gpt-5.6-luna", label: "GPT-5.6 Luna", supportsImages: true),
-            .init(id: "gpt-5.5", label: "GPT-5.5", supportsImages: true),
-            .init(id: "gpt-5.4", label: "GPT-5.4", supportsImages: true),
-            .init(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", supportsImages: true),
-            .init(id: "gpt-5.4-nano", label: "GPT-5.4 Nano", supportsImages: true),
-            .init(id: "gpt-5.1", label: "GPT-5.1", supportsImages: true),
-            .init(id: "gpt-5", label: "GPT-5", supportsImages: true),
-            .init(id: "gpt-4.1", label: "GPT-4.1", supportsImages: true),
-            .init(id: "gpt-4o", label: "GPT-4o", supportsImages: true),
-            .init(id: "gpt-4o-mini", label: "GPT-4o mini", supportsImages: true),
         ]
         case .zai: [
+            .init(id: "glm-5.3-flash", label: "GLM-5.3 Flash", supportsImages: true),
+            .init(id: "glm-5.3", label: "GLM-5.3", supportsImages: false),
             .init(id: "glm-5.2", label: "GLM-5.2", supportsImages: false),
-            .init(id: "glm-4.7-flash", label: "GLM-4.7 Flash", supportsImages: false),
-            .init(id: "glm-4.5-flash", label: "GLM-4.5 Flash", supportsImages: false),
-            .init(id: "glm-4.5-air", label: "GLM-4.5 Air", supportsImages: false),
-            .init(id: "glm-4.7", label: "GLM-4.7", supportsImages: false),
-            .init(id: "glm-4.7-flashx", label: "GLM-4.7 FlashX", supportsImages: false),
-            .init(id: "glm-4.6", label: "GLM-4.6", supportsImages: false),
-            .init(id: "glm-4.5", label: "GLM-4.5", supportsImages: false),
-            .init(id: "glm-4.5-x", label: "GLM-4.5 X", supportsImages: false),
-            .init(id: "glm-4.5-airx", label: "GLM-4.5 AirX", supportsImages: false),
-            .init(id: "glm-4-32b-0414-128k", label: "GLM-4 32B 128K", supportsImages: false),
-            .init(id: "glm-5", label: "GLM-5", supportsImages: false),
-            .init(id: "glm-5-turbo", label: "GLM-5 Turbo", supportsImages: false),
-            .init(id: "glm-5.1", label: "GLM-5.1", supportsImages: false),
-            .init(id: "glm-5v-turbo", label: "GLM-5V-Turbo", supportsImages: true),
-            .init(id: "glm-4.6v", label: "GLM-4.6V", supportsImages: true),
-            .init(id: "glm-4.5v", label: "GLM-4.5V", supportsImages: true),
         ]
         }
     }
 
     var defaultModel: String {
-        models.first?.id ?? ""
+        switch self {
+        case .anthropic: "claude-sonnet-5"
+        case .openAI: "gpt-5.6-terra"
+        case .zai: "glm-5.3-flash"
+        }
     }
 
     var endpoint: URL {
@@ -83,6 +60,20 @@ struct LLMModelOption: Identifiable, Equatable {
     let id: String
     let label: String
     let supportsImages: Bool
+}
+
+/// Resets the stored model selection when it no longer exists in the provider's
+/// catalog (e.g. after pruning pre-2026 models). Unknown provider ids (custom
+/// providers) are left alone.
+enum LLMModelSelectionMigration {
+    static func migrateStoredSelection(defaults: UserDefaults = .standard) {
+        guard let provider = LLMProvider(
+            rawValue: defaults.string(forKey: "selectedProvider") ?? "anthropic"
+        ) else { return }
+        let stored = defaults.string(forKey: "selectedModel") ?? ""
+        guard !provider.models.contains(where: { $0.id == stored }) else { return }
+        defaults.set(provider.defaultModel, forKey: "selectedModel")
+    }
 }
 
 // MARK: - Unified streaming service
@@ -285,6 +276,20 @@ struct LLMService {
         apiKey: String,
         context: ChatContext
     ) -> AsyncThrowingStream<StreamChunk, Error> {
+        if let custom = context.customProvider {
+            switch custom.protocolKind {
+            case .anthropicCompatible:
+                return streamAnthropic(
+                    messages: messages, apiKey: apiKey, context: context,
+                    endpointURLOverride: custom.chatEndpointURL()
+                )
+            case .openAICompatible:
+                return streamOpenAI(
+                    messages: messages, apiKey: apiKey, context: context,
+                    provider: .openAI, baseURLOverride: custom.chatEndpointURL()
+                )
+            }
+        }
         let provider = LLMProvider(rawValue: context.provider) ?? .anthropic
         switch provider {
         case .anthropic:
@@ -299,17 +304,20 @@ struct LLMService {
     private func streamAnthropic(
         messages: [[String: Any]],
         apiKey: String,
-        context: ChatContext
+        context: ChatContext,
+        endpointURLOverride: URL? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 for attempt in 1...Self.providerOverloadMaxAttempts {
                     do {
-                    var request = URLRequest(url: LLMProvider.anthropic.endpoint)
+                    var request = URLRequest(url: endpointURLOverride ?? LLMProvider.anthropic.endpoint)
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    if !apiKey.isEmpty {
+                        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    }
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
                     let body: [String: Any] = [
@@ -422,7 +430,7 @@ struct LLMService {
             return ["max_tokens": 16_384]
         }
         let m = model.lowercased()
-        if m.hasPrefix("gpt-5") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
+        if m.hasPrefix("gpt-5") || m.hasPrefix("gpt-6") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
             return ["max_completion_tokens": 16_384]
         }
         return ["max_tokens": 16_384]
@@ -442,17 +450,22 @@ struct LLMService {
         messages: [[String: Any]],
         apiKey: String,
         context: ChatContext,
-        provider: LLMProvider
+        provider: LLMProvider,
+        baseURLOverride: URL? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 for attempt in 1...Self.providerOverloadMaxAttempts {
                     do {
-                    var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, context: context))
+                    var request = URLRequest(
+                        url: baseURLOverride ?? openAIChatCompletionsURL(provider: provider, context: context)
+                    )
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    if !apiKey.isEmpty {
+                        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    }
 
                     let openAIMessages = convertToOpenAIMessages(messages, context: context)
                     var body: [String: Any] = [
@@ -892,9 +905,25 @@ struct LLMService {
         model: String,
         provider: LLMProvider,
         zaiUseCodingEndpoint: Bool = true,
-        maxOutputTokens: Int = 512
+        maxOutputTokens: Int = 512,
+        customProvider: CustomProvider? = nil
     ) async throws -> String {
         let cap = min(8192, max(64, maxOutputTokens))
+        if let custom = customProvider {
+            switch custom.protocolKind {
+            case .anthropicCompatible:
+                return try await completeAnthropic(
+                    prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap,
+                    endpointURLOverride: custom.chatEndpointURL()
+                )
+            case .openAICompatible:
+                return try await completeOpenAI(
+                    prompt: prompt, apiKey: apiKey, model: model,
+                    provider: .openAI, zaiUseCodingEndpoint: zaiUseCodingEndpoint, maxTokens: cap,
+                    baseURLOverride: custom.chatEndpointURL()
+                )
+            }
+        }
         switch provider {
         case .anthropic:
             return try await completeAnthropic(prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap)
@@ -910,11 +939,19 @@ struct LLMService {
         }
     }
 
-    private func completeAnthropic(prompt: String, apiKey: String, model: String, maxTokens: Int) async throws -> String {
-        var request = URLRequest(url: LLMProvider.anthropic.endpoint)
+    private func completeAnthropic(
+        prompt: String,
+        apiKey: String,
+        model: String,
+        maxTokens: Int,
+        endpointURLOverride: URL? = nil
+    ) async throws -> String {
+        var request = URLRequest(url: endpointURLOverride ?? LLMProvider.anthropic.endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        if !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         let body: [String: Any] = [
@@ -946,12 +983,17 @@ struct LLMService {
         model: String,
         provider: LLMProvider,
         zaiUseCodingEndpoint: Bool,
-        maxTokens: Int
+        maxTokens: Int,
+        baseURLOverride: URL? = nil
     ) async throws -> String {
-        var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, zaiUseCodingEndpoint: zaiUseCodingEndpoint))
+        var request = URLRequest(
+            url: baseURLOverride ?? openAIChatCompletionsURL(provider: provider, zaiUseCodingEndpoint: zaiUseCodingEndpoint)
+        )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
 
         var body: [String: Any] = [
             "model": model,
@@ -959,7 +1001,7 @@ struct LLMService {
             "messages": [["role": "user", "content": prompt]]
         ]
         let m = model.lowercased()
-        if provider == .openAI, m.hasPrefix("gpt-5") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
+        if provider == .openAI, m.hasPrefix("gpt-5") || m.hasPrefix("gpt-6") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
             body["max_completion_tokens"] = maxTokens
         } else {
             body["max_tokens"] = maxTokens

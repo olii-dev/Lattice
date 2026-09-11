@@ -44,6 +44,21 @@ final class APIKeyStore: ObservableObject {
         Self.write(trimmed, account: Self.account(for: provider))
     }
 
+    // MARK: Custom provider keys
+
+    func customKey(id: UUID) -> String {
+        Self.readAccount("custom.\(id.uuidString)")
+    }
+
+    func setCustomKey(_ value: String, id: UUID) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        Self.write(trimmed, account: "custom.\(id.uuidString)")
+    }
+
+    func removeCustomKey(id: UUID) {
+        Self.deleteAccount("custom.\(id.uuidString)")
+    }
+
     private static func account(for provider: LLMProvider) -> Account {
         switch provider {
         case .anthropic: return .anthropic
@@ -78,15 +93,19 @@ final class APIKeyStore: ObservableObject {
 
     // MARK: - Keychain
 
-    private static func baseQuery(_ account: Account) -> [String: Any] {
+    private static func baseQuery(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account.rawValue,
+            kSecAttrAccount as String: account,
         ]
     }
 
     private static func read(_ account: Account) -> String {
+        readAccount(account.rawValue)
+    }
+
+    private static func readAccount(_ account: String) -> String {
         var query = baseQuery(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -97,8 +116,12 @@ final class APIKeyStore: ObservableObject {
     }
 
     private static func write(_ value: String, account: Account) {
+        write(value, account: account.rawValue)
+    }
+
+    private static func write(_ value: String, account: String) {
         if value.isEmpty {
-            SecItemDelete(baseQuery(account) as CFDictionary)
+            deleteAccount(account)
             return
         }
         let data = Data(value.utf8)
@@ -109,5 +132,9 @@ final class APIKeyStore: ObservableObject {
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         SecItemAdd(add as CFDictionary, nil)
+    }
+
+    private static func deleteAccount(_ account: String) {
+        SecItemDelete(baseQuery(account) as CFDictionary)
     }
 }

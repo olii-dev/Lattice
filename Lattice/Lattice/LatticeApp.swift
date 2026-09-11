@@ -8,6 +8,7 @@ struct LatticeApp: App {
 
     init() {
         APIKeyStore.migrateLegacyKeysFromUserDefaults()
+        LLMModelSelectionMigration.migrateStoredSelection()
     }
 
     var body: some Scene {

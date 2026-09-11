@@ -239,6 +239,8 @@ struct ChatContext: Equatable {
     let bundleIdentifierOverride: String?
     let developmentTeam: String?
     let projectSummary: LatticeProjectSummary?
+    /// Resolved custom provider when `provider` is `"custom:<uuid>"`.
+    var customProvider: CustomProvider?
 
     static func == (lhs: ChatContext, rhs: ChatContext) -> Bool {
         lhs.runTarget == rhs.runTarget &&
@@ -251,7 +253,8 @@ struct ChatContext: Equatable {
         lhs.buildInfo?.simulatorID == rhs.buildInfo?.simulatorID &&
         lhs.bundleIdentifierOverride == rhs.bundleIdentifierOverride &&
         lhs.developmentTeam == rhs.developmentTeam &&
-        lhs.projectSummary == rhs.projectSummary
+        lhs.projectSummary == rhs.projectSummary &&
+        lhs.customProvider == rhs.customProvider
     }
 
     var messagePrefix: String? {
@@ -1531,6 +1534,7 @@ struct ContentView: View {
     @StateObject private var viewModel: ChatViewModel
     @StateObject private var recentStore = RecentProjectsStore()
     @ObservedObject private var keyStore = APIKeyStore.shared
+    @ObservedObject private var customProviderStore = CustomProviderStore.shared
     @AppStorage("zaiUseCodingEndpoint") private var zaiUseCodingEndpoint = true
     @AppStorage("selectedProvider") private var selectedProvider = "anthropic"
     @AppStorage("selectedSimulatorID") private var selectedSimulatorID = ""
@@ -1573,6 +1577,7 @@ struct ContentView: View {
 
     @State private var showConsoleSheet = false
     @State private var showHistoryRestore = false
+    @State private var showOnboarding = false
     @State private var consoleSearch = ""
     @State private var sidebarLayoutScrollToken: UInt = 0
 
@@ -1584,7 +1589,28 @@ struct ContentView: View {
     }
 
     private var activeAPIKey: String {
-        keyStore.key(for: LLMProvider(rawValue: selectedProvider) ?? .anthropic)
+        if let custom = activeCustomProvider {
+            return keyStore.customKey(id: custom.id)
+        }
+        return keyStore.key(for: LLMProvider(rawValue: selectedProvider) ?? .anthropic)
+    }
+
+    private var activeCustomProvider: CustomProvider? {
+        customProviderStore.provider(selectionID: selectedProvider)
+    }
+
+    /// True when any provider (built-in or custom) has a key configured.
+    private var hasAnyAPIKeyConfigured: Bool {
+        if LLMProvider.allCases.contains(where: { !keyStore.key(for: $0).isEmpty }) {
+            return true
+        }
+        return customProviderStore.providers.contains { !keyStore.customKey(id: $0.id).isEmpty }
+    }
+
+    /// Model list for the active selection: a custom provider's configured models,
+    /// or the built-in provider catalog.
+    private var activeModelOptions: [LLMModelOption] {
+        activeCustomProvider?.modelOptions ?? selectedProviderOption.models
     }
 
     private var selectedProviderOption: LLMProvider {
@@ -1592,7 +1618,7 @@ struct ContentView: View {
     }
 
     private var selectedModelSupportsImages: Bool {
-        selectedProviderOption.models.first(where: { $0.id == selectedModel })?.supportsImages ?? false
+        activeModelOptions.first(where: { $0.id == selectedModel })?.supportsImages ?? false
     }
 
     private func assistantTurnRestoreActions(for rows: [ChatDisplayRow]) -> [UUID: (checkpointId: UUID, prompt: String)] {
@@ -2153,32 +2179,65 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.2), value: showProjectHub)
     }
 
-    var body: some View {
+    /// All modal sheets for the main window; kept in one place to keep `body`
+    /// under the type-checker's complexity limit.
+    @ViewBuilder
+    private var mainInterfaceSheets: some View {
         layeredMainInterface
-        .sheet(item: $selectedImagePreview) { attachment in
-            LatticeImagePreviewSheet(attachment: attachment)
-        }
-        .sheet(item: $composerEditingAttachment) { attachment in
-            LatticeImageEditorSheet(attachment: attachment) { edited in
-                replaceComposerAttachment(attachment, with: edited)
+            .sheet(item: $selectedImagePreview) { attachment in
+                LatticeImagePreviewSheet(attachment: attachment)
             }
-        }
-        .sheet(isPresented: $showHistoryRestore) {
-            HistoryRestoreSheet(
-                checkpoints: viewModel.chatRestorePointHeaders,
-                isBusy: viewModel.isRunning,
-                onRestore: { selectedId, chatTargetId, restoredPrompt in
-                    viewModel.restoreHistory(selectedPointId: selectedId, chatPointId: chatTargetId)
-                    if !restoredPrompt.isEmpty {
-                        input = restoredPrompt
-                        composerHeight = 42
-                    }
+            .sheet(item: $composerEditingAttachment) { attachment in
+                LatticeImageEditorSheet(attachment: attachment) { edited in
+                    replaceComposerAttachment(attachment, with: edited)
                 }
-            )
-            .onAppear {
-                viewModel.reloadChatRestorePointHeaders()
+            }
+            .sheet(isPresented: $showHistoryRestore) {
+                historyRestoreSheet
+            }
+            .sheet(isPresented: $showOnboarding) {
+                onboardingSheet
+            }
+    }
+
+    private var historyRestoreSheet: some View {
+        HistoryRestoreSheet(
+            checkpoints: viewModel.chatRestorePointHeaders,
+            isBusy: viewModel.isRunning,
+            onRestore: { selectedId, chatTargetId, restoredPrompt in
+                viewModel.restoreHistory(selectedPointId: selectedId, chatPointId: chatTargetId)
+                if !restoredPrompt.isEmpty {
+                    input = restoredPrompt
+                    composerHeight = 42
+                }
+            }
+        )
+        .onAppear {
+            viewModel.reloadChatRestorePointHeaders()
+        }
+    }
+
+    private var onboardingSheet: some View {
+        LatticeOnboardingSheet { prompt in
+            if let prompt, !prompt.isEmpty {
+                input = prompt
+                composerHeight = 42
             }
         }
+    }
+
+    /// Lifecycle observers for the main window; extracted so `body` stays under
+    /// the type-checker's complexity limit.
+    private var mainInterfaceLifecycle: some View {
+        withStateObservers(
+            withNotificationObservers(
+                withEarlyLifecycle(mainInterfaceSheets)
+            )
+        )
+    }
+
+    private func withEarlyLifecycle(_ base: some View) -> some View {
+        base
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 viewModel.persistSession()
@@ -2195,10 +2254,17 @@ struct ContentView: View {
             if !launchHubApplied {
                 launchHubApplied = true
                 showProjectHub = true
+                if !hasAnyAPIKeyConfigured && recentStore.projects.isEmpty {
+                    showOnboarding = true
+                }
             }
             loadBundleIdentifierOverrideForSelectedProject()
             refreshResolvedProjectBundleIdentifier()
         }
+    }
+
+    private func withNotificationObservers(_ base: some View) -> some View {
+        base
         .onReceive(NotificationCenter.default.publisher(for: .latticeOpenWelcomeHub)) { _ in
             showProjectHub = true
         }
@@ -2208,6 +2274,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .latticeRunOnSimulator)) { _ in
             runOnSimulatorDirect()
         }
+    }
+
+    private func withStateObservers(_ base: some View) -> some View {
+        base
         .onChange(of: viewModel.isRunning) { _, isRunning in
             generationState.isGenerating = isRunning
             if !isRunning {
@@ -2288,6 +2358,10 @@ struct ContentView: View {
                 selectedSimulatorID = ""
             }
         }
+    }
+
+    var body: some View {
+        mainInterfaceLifecycle
     }
 
     private var buildRunHelp: String {
@@ -2386,8 +2460,7 @@ struct ContentView: View {
     // MARK: - Context bar
 
     private var contextBar: some View {
-        let prov = LLMProvider(rawValue: selectedProvider) ?? .anthropic
-        let modelLabel = prov.models.first(where: { $0.id == selectedModel })?.label ?? selectedModel
+        let modelLabel = activeModelOptions.first(where: { $0.id == selectedModel })?.label ?? selectedModel
         let folderShort: String = {
             let p = selectedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !p.isEmpty else { return "No folder" }
@@ -2430,7 +2503,7 @@ struct ContentView: View {
                 contextProjectTitle(
                     folderShort: folderShort,
                     path: projectRoot,
-                    providerLabel: prov.displayName,
+                    providerLabel: activeCustomProvider?.name ?? selectedProviderOption.displayName,
                     modelLabel: modelLabel
                 )
 
@@ -3182,7 +3255,8 @@ struct ContentView: View {
             buildInfo: nil,
             bundleIdentifierOverride: effectiveBundleIdentifierForContext,
             developmentTeam: resolvedDevelopmentTeam,
-            projectSummary: viewModel.projectSummary
+            projectSummary: viewModel.projectSummary,
+            customProvider: activeCustomProvider
         )
     }
 
