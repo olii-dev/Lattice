@@ -12,15 +12,9 @@ struct CapabilityStatus {
 /// Scans a project's entitlements and Info.plist / build settings to determine which catalog
 /// capabilities are currently active. Read-only — never writes.
 ///
-/// A capability is **active** when *all* of its file-side markers are present:
-/// - every declared entitlement key exists in the project's `.entitlements` file, AND
-/// - every declared Info.plist key exists in the on-disk `Info.plist` OR as an
-///   `INFOPLIST_KEY_<key>` build setting in pbxproj.
-///
-/// Capabilities with no entitlement/plist markers fall back to seed-file detection:
-/// they count as active once any seeded file exists on disk (e.g. SwiftData's sample
-/// model). Capabilities with neither kind of marker (e.g. StoreKit) are undetectable
-/// and never appear in `CapabilityStatus.activeCapabilities`.
+/// A capability is **active** when all of its entitlement keys and Info.plist keys are
+/// present, **or** when any of its seed files exists on disk (seed presence proves the
+/// capability was applied even when optional parameters were never supplied).
 enum CapabilityStatusChecker {
 
     /// Reports which catalog capabilities are currently active in the project at `projectRoot`.
@@ -46,32 +40,43 @@ enum CapabilityStatusChecker {
         for capability in AppleCapabilityCatalog.all {
             let entKeys = capability.entitlements.map { $0.key }
             let plistKeys = capability.infoPlistKeys.map { $0.key }
+            let hasEntPlistMarkers = !entKeys.isEmpty || !plistKeys.isEmpty
+            let hasSeedMarkers = !capability.seedFiles.isEmpty
 
-            // No entitlement/plist markers: fall back to seed-file markers
-            // (a capability counts as active once any of its seeded files exist).
-            if entKeys.isEmpty && plistKeys.isEmpty {
-                if seedFileMarkerPresent(capability, projectRoot: projectRoot, pbx: pbxText) {
-                    active.insert(capability.id)
-                }
-                continue
+            // Undetectable: no markers of any kind (e.g. StoreKit).
+            guard hasEntPlistMarkers || hasSeedMarkers else { continue }
+
+            let entOK: Bool
+            if entKeys.isEmpty {
+                entOK = true
+            } else if let entitlements {
+                entOK = entKeys.allSatisfy { entitlements[$0] != nil }
+            } else {
+                entOK = false
             }
 
-            // ALL entitlement keys must be present in the entitlements dict.
-            if !entKeys.isEmpty {
-                guard let entitlements else { continue }
-                let allEntPresent = entKeys.allSatisfy { entitlements[$0] != nil }
-                guard allEntPresent else { continue }
-            }
-
-            // ALL plist keys must be present on-disk OR as INFOPLIST_KEY_* settings.
-            if !plistKeys.isEmpty {
-                let allPlistPresent = plistKeys.allSatisfy { key in
+            let plistOK: Bool
+            if plistKeys.isEmpty {
+                plistOK = true
+            } else {
+                // Keys with unresolved placeholder parameters may legitimately be absent.
+                plistOK = plistKeys.allSatisfy { key in
                     (infoPlist?[key] != nil) || infoPlistSettingKeys.contains(key)
                 }
-                guard allPlistPresent else { continue }
             }
 
-            active.insert(capability.id)
+            var isActive = hasEntPlistMarkers && entOK && plistOK
+
+            // Seed files prove application even when optional parameters were never
+            // supplied or entitlement/plist markers are absent (e.g. App Intents
+            // without a Siri usage description).
+            if !isActive, hasSeedMarkers {
+                isActive = seedFileMarkerPresent(capability, projectRoot: projectRoot, pbx: pbxText)
+            }
+
+            if isActive {
+                active.insert(capability.id)
+            }
         }
 
         return CapabilityStatus(activeCapabilities: active)

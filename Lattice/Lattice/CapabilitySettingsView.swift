@@ -40,6 +40,8 @@ struct CapabilitySettingsView: View {
     @State private var apsEnvironment: String = "development"
     @State private var keychainGroupInput: String = ""
     @State private var iCloudContainerInput: String = ""
+    @State private var healthShareUsageInput: String = ""
+    @State private var healthUpdateUsageInput: String = ""
     @State private var backgroundModes: Set<String> = []
 
     /// The UIBackgroundModes values offered in the UI. Covers the common cases; the user can
@@ -163,6 +165,19 @@ struct CapabilitySettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+        case "healthkit":
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Why the app reads health data")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                TextField("Shows your workout progress", text: $healthShareUsageInput)
+                    .textFieldStyle(.roundedBorder)
+                Text("Why the app writes health data")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                TextField("Saves workouts you log", text: $healthUpdateUsageInput)
+                    .textFieldStyle(.roundedBorder)
+            }
         case "background_modes":
             VStack(alignment: .leading, spacing: 4) {
                 Text("Background modes")
@@ -221,6 +236,12 @@ struct CapabilitySettingsView: View {
                 return "Select at least one background mode before enabling Background Modes."
             }
             return nil
+        case "healthkit":
+            if healthShareUsageInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || healthUpdateUsageInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Enter both health usage descriptions before enabling HealthKit — the App Store requires them."
+            }
+            return nil
         default:
             return nil
         }
@@ -242,6 +263,11 @@ struct CapabilitySettingsView: View {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
             return containers.isEmpty ? [:] : ["iCloudContainerIdentifiers": containers]
+        case "healthkit":
+            return [
+                "HealthShareUsageDescription": healthShareUsageInput.trimmingCharacters(in: .whitespacesAndNewlines),
+                "HealthUpdateUsageDescription": healthUpdateUsageInput.trimmingCharacters(in: .whitespacesAndNewlines),
+            ]
         default:
             return [:]
         }

@@ -220,6 +220,78 @@ enum AppleCapabilityCatalog {
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
 
+    static let healthkit = AppleCapability(
+        id: "healthkit",
+        displayName: "HealthKit",
+        summary: "Read and write health data — workouts, steps, heart rate, sleep, and more.",
+        entitlements: [
+            EntitlementEntry(
+                key: "com.apple.developer.healthkit",
+                value: .boolean(true)
+            )
+        ],
+        infoPlistKeys: [
+            PlistEntry(key: "NSHealthShareUsageDescription", value: "$(HealthShareUsageDescription)"),
+            PlistEntry(key: "NSHealthUpdateUsageDescription", value: "$(HealthUpdateUsageDescription)")
+        ],
+        frameworks: ["HealthKit.framework"],
+        seedFiles: [],
+        provisioningNotes: "Enable HealthKit for your App ID in the Apple Developer Portal. The app must request user permission for each data type at runtime via HKHealthStore.requestAuthorization.",
+        applicablePlatforms: [.iOS]
+    )
+
+    static let appIntents = AppleCapability(
+        id: "app_intents",
+        displayName: "Siri & Shortcuts (App Intents)",
+        summary: "Expose app actions to Siri, Shortcuts, Spotlight, and the Action Button.",
+        entitlements: [],
+        infoPlistKeys: [
+            PlistEntry(key: "NSSiriUsageDescription", value: "$(SiriUsageDescription)")
+        ],
+        frameworks: [],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)/SampleIntents.swift",
+                contents: """
+                import AppIntents
+
+                // Starter App Intents. Each AppIntent is an action users can run from
+                // Siri, Shortcuts, Spotlight, or the Action Button. Add more intents
+                // or parameters as needed — they are discovered automatically.
+                struct AddTaskIntent: AppIntent {
+                    static var title: LocalizedStringResource = "Add Task"
+                    static var description = IntentDescription("Adds a task to the app.")
+
+                    @Parameter(title: "Task name")
+                    var taskName: String
+
+                    static var parameterSummary: some ParameterSummary {
+                        Summary("Add \\(\\.$taskName)")
+                    }
+
+                    @MainActor
+                    func perform() async throws -> some IntentResult & ProvidesDialog {
+                        // TODO: insert the task into your data store (e.g. SwiftData).
+                        return .result(dialog: "Added \\(taskName)")
+                    }
+                }
+
+                struct OpenAppIntent: AppIntent {
+                    static var title: LocalizedStringResource = "Open App"
+                    static var openAppWhenRun = true
+
+                    @MainActor
+                    func perform() async throws -> some IntentResult {
+                        return .result()
+                    }
+                }
+                """
+            )
+        ],
+        provisioningNotes: nil,
+        applicablePlatforms: [.iOS, .macOS, .watchOS]
+    )
+
     /// All supported capabilities, in display order.
     static let all: [AppleCapability] = [
         appGroups,
@@ -229,6 +301,8 @@ enum AppleCapabilityCatalog {
         backgroundModes,
         swiftdata,
         cloudkitSync,
+        healthkit,
+        appIntents,
     ]
 
     /// Look up a capability by id. Returns nil if unknown.
