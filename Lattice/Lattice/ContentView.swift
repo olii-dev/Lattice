@@ -1009,9 +1009,9 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.04), radius: 12, y: 3)
@@ -1050,15 +1050,15 @@ struct ContentView: View {
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary.opacity(0.78))
                 .tracking(0.35)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 5)
+                .padding(.horizontal, LatticeDesign.Spacing.s)
+                .padding(.vertical, LatticeDesign.Spacing.xs)
                 .background(
                     Capsule()
                         .fill(Color.primary.opacity(0.05))
                 )
                 .frame(width: 82, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                 if let timestamp = entry.timestamp {
                     Text(timestamp)
                         .font(.caption2)
@@ -1075,11 +1075,11 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .fill(Color.primary.opacity(0.018))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.04), lineWidth: 1)
         )
     }
@@ -1742,7 +1742,7 @@ struct ContentView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: 1180)
             .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -1755,7 +1755,7 @@ struct ContentView: View {
                     )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.05), radius: 10, y: 2)
@@ -1776,7 +1776,7 @@ struct ContentView: View {
         let exists = !path.isEmpty && FileManager.default.fileExists(atPath: path)
         return HStack(alignment: .center, spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                     .fill(Color.primary.opacity(0.06))
                 Image(systemName: "folder.fill")
                     .font(.caption.weight(.semibold))
@@ -1784,7 +1784,7 @@ struct ContentView: View {
             }
             .frame(width: 30, height: 30)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                 Text(folderShort)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -1847,7 +1847,7 @@ struct ContentView: View {
     private var transcriptEmptyPlaceholder: some View {
         VStack(alignment: .center, spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .fill(Color.primary.opacity(0.04))
                     .frame(width: 72, height: 72)
                 Image(systemName: "wand.and.stars.inverse")
@@ -1879,11 +1879,11 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 42)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .fill(Color.primary.opacity(0.02))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
@@ -2105,7 +2105,7 @@ struct ContentView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 10)
-                                .padding(.vertical, 3)
+                                .padding(.vertical, LatticeDesign.Spacing.xs)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2221,7 +2221,7 @@ struct ContentView: View {
                         Text("Describe the app or feature to build…")
                             .foregroundStyle(.secondary.opacity(0.96))
                             .padding(.leading, selectedModelSupportsImages ? 8 : 12)
-                            .padding(.top, 11)
+                            .padding(.top, LatticeDesign.Spacing.m)
                             .allowsHitTesting(false)
                     }
 
@@ -2278,11 +2278,11 @@ struct ContentView: View {
             }
             .latticeElevatedCard(radius: 18, strokeOpacity: isComposerDropTarget ? 0.18 : 0.08, shadowOpacity: 0.04)
             .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .fill(Color.accentColor.opacity(isComposerDropTarget ? 0.08 : 0))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .strokeBorder(
                         Color.accentColor.opacity(isComposerDropTarget ? 0.55 : 0),
                         style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])
@@ -2495,7 +2495,7 @@ struct ContentView: View {
                     attachment: attachment,
                     width: latticeComposerAttachmentWidth,
                     height: latticeComposerAttachmentHeight,
-                    cornerRadius: 14,
+                    cornerRadius: LatticeDesign.Radius.panel,
                     showsFileName: false
                 )
             }
@@ -2964,7 +2964,7 @@ private struct DirectRunBannerCard: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(accentColor.opacity(0.92))
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                     HStack(spacing: 6) {
                         Text("Local run")
                             .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -2973,8 +2973,8 @@ private struct DirectRunBannerCard: View {
                         Text(destinationLabel)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary.opacity(0.84))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, LatticeDesign.Spacing.s)
+                            .padding(.vertical, LatticeDesign.Spacing.xs)
                             .background(
                                 Capsule()
                                     .fill(Color.primary.opacity(0.045))
@@ -3026,7 +3026,7 @@ private struct DirectRunBannerCard: View {
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
+                        .padding(.vertical, LatticeDesign.Spacing.s)
                         .background(
                             Capsule()
                                 .fill(Color.primary.opacity(0.04))
@@ -3084,9 +3084,9 @@ private struct DirectRunBannerCard: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, LatticeDesign.Spacing.m)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .fill(
                     statusKind == .error
                         ? Color.orange.opacity(0.045)
@@ -3094,10 +3094,10 @@ private struct DirectRunBannerCard: View {
                             ? Color.yellow.opacity(0.045)
                             : Color.green.opacity(0.04)
                 )
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .strokeBorder(
                     accentColor.opacity(statusKind == .success ? 0.12 : 0.16),
                     lineWidth: 1
@@ -3200,8 +3200,8 @@ private struct AssistantSourcesButton: View {
                     .foregroundStyle(.secondary.opacity(0.88))
             }
             .foregroundStyle(.secondary.opacity(0.94))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
+            .padding(.horizontal, LatticeDesign.Spacing.s)
+            .padding(.vertical, LatticeDesign.Spacing.xs)
             .background(
                 Capsule(style: .continuous)
                     .fill(Color.primary.opacity(0.04))
@@ -3230,7 +3230,7 @@ private struct AssistantSourcesDrawer: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(sources) { source in
                     HStack(alignment: .top, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                             HStack(spacing: 6) {
                                 Text(source.domain)
                                     .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -3268,22 +3268,22 @@ private struct AssistantSourcesDrawer: View {
                         .controlSize(.small)
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 9)
+                    .padding(.vertical, LatticeDesign.Spacing.s)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                             .fill(Color.primary.opacity(0.026))
                     )
                 }
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 11)
+        .padding(.vertical, LatticeDesign.Spacing.m)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .fill(Color.primary.opacity(0.028))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
     }
@@ -3331,9 +3331,9 @@ private struct ProjectSummaryStrip: View {
                     compactLayout
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.vertical, LatticeDesign.Spacing.s)
                 .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [
@@ -3346,7 +3346,7 @@ private struct ProjectSummaryStrip: View {
                         )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
                 )
             }
@@ -3486,12 +3486,12 @@ private struct ProjectSummaryBadge: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
             } else {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                     .fill(Color.secondary.opacity(0.2))
             }
         }
         .frame(width: 34, height: 34)
-        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
     }
 }
@@ -3976,11 +3976,11 @@ private struct AssistantProseCard: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                         .fill(Color.orange.opacity(0.07))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                         .strokeBorder(Color.orange.opacity(0.18), lineWidth: 1)
                 )
             }
@@ -4107,9 +4107,9 @@ private struct ReasoningCollapsibleCard: View {
                         .foregroundStyle(.secondary.opacity(0.96))
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+                .padding(.vertical, LatticeDesign.Spacing.s)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                         .fill(unifiedTurn ? Color.primary.opacity(0.028) : Color.secondary.opacity(0.06))
                 )
                 .contentShape(Rectangle())
@@ -4164,11 +4164,11 @@ private struct LatticeToolActivitySection<Content: View>: View {
         Group {
             if unifiedTurn {
                 content()
-                    .padding(.vertical, 5)
+                    .padding(.vertical, LatticeDesign.Spacing.xs)
                     .padding(.horizontal, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                             .fill(Color.primary.opacity(0.018))
                     )
             } else {
@@ -4215,9 +4215,9 @@ private struct DirectorOutcomeBlock: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.vertical, LatticeDesign.Spacing.s)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .fill(Color.primary.opacity(0.022))
         )
     }
@@ -4249,7 +4249,7 @@ private struct AssistantWorkingIndicatorRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .fill(Color.primary.opacity(0.028))
         )
     }
@@ -4447,7 +4447,7 @@ private struct AssistantTurnCard: View {
                             if index < pieces.count - 1 {
                                 Divider()
                                     .opacity(0.22)
-                                    .padding(.vertical, 5)
+                                    .padding(.vertical, LatticeDesign.Spacing.xs)
                             }
                         }
                     }
@@ -4573,9 +4573,9 @@ private struct AssistantTurnCard: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.vertical, LatticeDesign.Spacing.s)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                     .fill(Color.primary.opacity(0.02))
             )
             .contentShape(Rectangle())
@@ -5343,7 +5343,7 @@ private struct LatticeImageEditorSheet: View {
                     GeometryReader { proxy in
                         let fittedRect = latticeFittedImageRect(imageSize: image.latticePixelSize, in: proxy.size)
                         ZStack {
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                                 .fill(Color.white.opacity(0.04))
 
                             Image(nsImage: image)
@@ -5360,9 +5360,9 @@ private struct LatticeImageEditorSheet: View {
                                 strokesOverlay(in: fittedRect, active: true)
                             }
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                         )
                         .contentShape(Rectangle())
@@ -5370,7 +5370,7 @@ private struct LatticeImageEditorSheet: View {
                     }
                     .frame(minWidth: 760, minHeight: 500)
                 } else {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .fill(Color.white.opacity(0.05))
                         .frame(width: 760, height: 500)
                         .overlay {
@@ -5384,7 +5384,7 @@ private struct LatticeImageEditorSheet: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.62))
             }
-            .padding(24)
+            .padding(LatticeDesign.Spacing.xl)
         }
         .frame(minWidth: 900, minHeight: 660)
     }
@@ -5447,7 +5447,7 @@ private struct LatticeImageEditorSheet: View {
             }
             .fill(Color.black.opacity(0.34), style: FillStyle(eoFill: true))
 
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.94), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                 .frame(width: displayCrop.width, height: displayCrop.height)
                 .position(x: displayCrop.midX, y: displayCrop.midY)
@@ -5535,7 +5535,7 @@ private struct LatticeImagePreviewSheet: View {
                 if let image {
                     GeometryReader { proxy in
                         ZStack {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                                 .fill(Color.white.opacity(0.03))
 
                             Image(nsImage: image)
@@ -5554,9 +5554,9 @@ private struct LatticeImagePreviewSheet: View {
                                     }
                                 }
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
                         )
                         .shadow(color: .black.opacity(0.34), radius: 28, y: 18)
@@ -5591,7 +5591,7 @@ private struct LatticeImagePreviewSheet: View {
                     }
                     .frame(maxWidth: 980, maxHeight: 760)
                 } else {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .fill(Color.white.opacity(0.06))
                         .frame(width: 420, height: 280)
                         .overlay {
@@ -5625,7 +5625,7 @@ private struct LatticeImagePreviewSheet: View {
                     .background(Circle().fill(Color.white.opacity(0.10)))
             }
             .buttonStyle(.plain)
-            .padding(20)
+            .padding(LatticeDesign.Spacing.xl)
         }
         .frame(minWidth: 860, minHeight: 620)
     }
@@ -5740,10 +5740,10 @@ struct AssistantBubble: View {
                 .padding(.top, 4)
                 .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isStreaming && !reduceMotion)
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                 MarkdownBlock(text: text, isStreaming: isStreaming)
                 if isStreaming, !text.isEmpty {
-                    HStack(spacing: 5) {
+                    HStack(spacing: LatticeDesign.Spacing.xs) {
                         Capsule()
                             .fill(Color.accentColor.opacity(0.35))
                             .frame(width: 28, height: 5)
@@ -5867,14 +5867,14 @@ struct ToolCard: View {
                         .foregroundStyle(isError ? .red : .primary)
                         .textSelection(.disabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
+                        .padding(LatticeDesign.Spacing.m)
                 }
                 .frame(maxHeight: 240, alignment: .top)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .strokeBorder(
                     isError ? Color.red.opacity(0.45) : Color.secondary.opacity(0.2),
                     lineWidth: 1
@@ -6067,7 +6067,7 @@ struct ProjectInspectorView: View {
                 }
 
                 if !selectedProjectPath.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                         Text("Selected path")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.tertiary)

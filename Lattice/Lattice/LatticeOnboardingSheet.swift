@@ -155,7 +155,7 @@ struct LatticeOnboardingSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
+        .padding(LatticeDesign.Spacing.l)
         .frame(width: 300)
     }
 
@@ -181,19 +181,19 @@ struct LatticeOnboardingSheet: View {
             }
             .padding(12)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                     .fill(selectedProviderRaw == provider.rawValue
                           ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.04))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                     .strokeBorder(
                         selectedProviderRaw == provider.rawValue
                             ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
                         lineWidth: 1
                     )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 44)

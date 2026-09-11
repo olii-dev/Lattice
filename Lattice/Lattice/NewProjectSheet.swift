@@ -49,27 +49,27 @@ struct NewProjectSheet: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .padding(24)
+                    .padding(LatticeDesign.Spacing.xl)
                 }
                 Divider().opacity(0.35)
                 footerBar
             }
             .frame(minWidth: 520, minHeight: 560)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.04))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.1), lineWidth: 1)
             )
-            .padding(20)
+            .padding(LatticeDesign.Spacing.xl)
             .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.12), radius: 28, y: 14)
 
             if isWorking {
                 ProgressView("Creating project…")
-                    .padding(24)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .padding(LatticeDesign.Spacing.xl)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous))
             }
         }
     }
@@ -80,7 +80,7 @@ struct NewProjectSheet: View {
                 .font(.title.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
-                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
                 Text("New project")
                     .font(.title2.weight(.bold))
@@ -90,7 +90,7 @@ struct NewProjectSheet: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(20)
+        .padding(LatticeDesign.Spacing.xl)
     }
 
     private var platformPicker: some View {
@@ -124,11 +124,11 @@ struct NewProjectSheet: View {
             .padding(.vertical, 16)
             .padding(.horizontal, 8)
             .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .fill(selected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(colorScheme == .dark ? 0.1 : 0.05))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                     .strokeBorder(
                         selected ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.12),
                         lineWidth: selected ? 1.5 : 1
@@ -174,14 +174,14 @@ struct NewProjectSheet: View {
                 .tracking(0.8)
             HStack(alignment: .center, spacing: 16) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.06))
                     if let customAppIcon {
                         Image(nsImage: customAppIcon)
                             .resizable()
                             .interpolation(.high)
                             .aspectRatio(contentMode: .fit)
-                            .padding(10)
+                            .padding(LatticeDesign.Spacing.m)
                     } else {
                         Image(systemName: "photo.badge.plus")
                             .font(.largeTitle)
@@ -190,7 +190,7 @@ struct NewProjectSheet: View {
                 }
                 .frame(width: 100, height: 100)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.card, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
                 )
                 VStack(alignment: .leading, spacing: 8) {
