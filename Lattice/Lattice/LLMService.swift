@@ -338,6 +338,7 @@ struct LLMService {
 
                     var blocks: [Int: ContentBlock] = [:]
                     var stopReason = "end_turn"
+                    var usage = LLMTokenUsage(inputTokens: nil, outputTokens: nil)
 
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
@@ -347,6 +348,15 @@ struct LLMService {
                         else { continue }
 
                         switch event.type {
+                        case "message_start":
+                            if let inputTokens = event.message?.usage?.input_tokens {
+                                usage.inputTokens = inputTokens
+                            }
+                        case "message_delta":
+                            if let r = event.delta?.stop_reason { stopReason = r }
+                            if let outputTokens = event.usage?.output_tokens {
+                                usage.outputTokens = outputTokens
+                            }
                         case "content_block_start":
                             guard let cb = event.content_block else { break }
                             let idx = event.index ?? 0
@@ -378,14 +388,15 @@ struct LLMService {
                             default: break
                             }
 
-                        case "message_delta":
-                            if let r = event.delta?.stop_reason { stopReason = r }
-
                         default: break
                         }
                     }
 
-                    continuation.yield(.done(stopReason: stopReason, blocks: blocks))
+                    continuation.yield(.done(
+                        stopReason: stopReason,
+                        blocks: blocks,
+                        usage: (usage.inputTokens != nil || usage.outputTokens != nil) ? usage : nil
+                    ))
                     continuation.finish()
                     return
                     } catch {
@@ -447,6 +458,7 @@ struct LLMService {
                     var body: [String: Any] = [
                         "model": context.model,
                         "stream": true,
+                        "stream_options": ["include_usage": true],
                         "tools": openAITools,
                         "messages": openAIMessages
                     ]
@@ -468,14 +480,24 @@ struct LLMService {
                     var blocks: [Int: ContentBlock] = [:]
                     var toolCallIndex = 0
                     var stopReason = "end_turn"
+                    var usage = LLMTokenUsage(inputTokens: nil, outputTokens: nil)
 
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
                         let json = String(line.dropFirst(6))
                         if json == "[DONE]" { break }
                         guard let data = json.data(using: .utf8),
-                              let chunk = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = chunk["choices"] as? [[String: Any]],
+                              let chunk = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+
+                        // Usage arrives in a final chunk with empty choices; capture before
+                        // the choices guard so that chunk isn't skipped.
+                        if let usagePayload = chunk["usage"] as? [String: Any] {
+                            if let input = usagePayload["prompt_tokens"] as? Int { usage.inputTokens = input }
+                            if let output = usagePayload["completion_tokens"] as? Int { usage.outputTokens = output }
+                        }
+
+                        guard let choices = chunk["choices"] as? [[String: Any]],
                               let choice = choices.first,
                               let delta = choice["delta"] as? [String: Any]
                         else { continue }
@@ -516,7 +538,11 @@ struct LLMService {
                         }
                     }
 
-                    continuation.yield(.done(stopReason: stopReason, blocks: blocks))
+                    continuation.yield(.done(
+                        stopReason: stopReason,
+                        blocks: blocks,
+                        usage: (usage.inputTokens != nil || usage.outputTokens != nil) ? usage : nil
+                    ))
                     continuation.finish()
                     return
                     } catch {

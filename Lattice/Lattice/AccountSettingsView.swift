@@ -5,9 +5,7 @@ struct AccountSettingsView: View {
     @ObservedObject var simulatorStore: SimulatorStore
     @ObservedObject var generationState: LatticeGenerationState
 
-    @AppStorage("anthropicAPIKey") private var anthropicKey = ""
-    @AppStorage("openAIAPIKey") private var openAIKey = ""
-    @AppStorage("zaiAPIKey") private var zaiKey = ""
+    @ObservedObject private var keyStore = APIKeyStore.shared
     @AppStorage("zaiUseCodingEndpoint") private var zaiUseCodingEndpoint = true
     @AppStorage("selectedProvider") private var selectedProvider = "anthropic"
     @AppStorage("selectedSimulatorID") private var selectedSimulatorID = ""
@@ -64,9 +62,9 @@ struct AccountSettingsView: View {
 
     private var currentKeyNonEmpty: Bool {
         switch currentProvider {
-        case .anthropic: return !anthropicKey.isEmpty
-        case .openAI: return !openAIKey.isEmpty
-        case .zai: return !zaiKey.isEmpty
+        case .anthropic: return !keyStore.anthropicKey.isEmpty
+        case .openAI: return !keyStore.openAIKey.isEmpty
+        case .zai: return !keyStore.zaiKey.isEmpty
         }
     }
 
@@ -301,10 +299,9 @@ struct AccountSettingsView: View {
     }
 
     private var keyBinding: Binding<String> {
-        switch currentProvider {
-        case .anthropic: $anthropicKey
-        case .openAI: $openAIKey
-        case .zai: $zaiKey
-        }
+        Binding<String>(
+            get: { keyStore.key(for: currentProvider) },
+            set: { keyStore.setKey($0, for: currentProvider) }
+        )
     }
 }

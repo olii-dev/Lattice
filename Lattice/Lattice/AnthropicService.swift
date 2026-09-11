@@ -54,12 +54,34 @@ func toolResultMessage(toolUseId: String, content: String, isError: Bool) -> [St
 
 // MARK: - Stream events
 
+struct LLMTokenUsage: Equatable {
+    var inputTokens: Int?
+    var outputTokens: Int?
+
+    /// "1.2k in · 0.4k out" style caption; nil when nothing measurable arrived.
+    var caption: String? {
+        var parts: [String] = []
+        if let inputTokens { parts.append("\(Self.formatCount(inputTokens)) in") }
+        if let outputTokens { parts.append("\(Self.formatCount(outputTokens)) out") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func formatCount(_ count: Int) -> String {
+        guard count >= 1_000 else { return "\(count)" }
+        let thousands = Double(count) / 1_000
+        let text = thousands >= 100
+            ? String(Int(thousands.rounded()))
+            : String(format: "%.1f", thousands)
+        return text.hasSuffix(".0") ? String(text.dropLast(2)) + "k" : text + "k"
+    }
+}
+
 enum StreamChunk: Sendable {
     case textDelta(String)
     /// OpenAI-compatible providers may stream extended reasoning separately from `content`.
     case reasoningDelta(String)
     case toolCallAnnounced(index: Int, id: String, name: String)
-    case done(stopReason: String, blocks: [Int: ContentBlock])
+    case done(stopReason: String, blocks: [Int: ContentBlock], usage: LLMTokenUsage?)
 }
 
 // MARK: - SSE Decodables (used by LLMService)
@@ -69,6 +91,30 @@ struct SSEEvent: Decodable {
     let index: Int?
     let content_block: SSEBlock?
     let delta: SSEDelta?
+    /// Anthropic `message_delta` carries cumulative token usage at the top level.
+    let usage: SSEUsagePayload?
+    /// Anthropic `message_start` carries initial usage inside the message envelope.
+    let message: SSEMessageMeta?
+}
+
+struct SSEMessageMeta: Decodable {
+    let usage: SSEUsagePayload?
+}
+
+/// Union of the usage field shapes across providers (Anthropic + OpenAI-style).
+struct SSEUsagePayload: Decodable {
+    let input_tokens: Int?
+    let output_tokens: Int?
+    let prompt_tokens: Int?
+    let completion_tokens: Int?
+
+    var anthropicUsage: LLMTokenUsage {
+        LLMTokenUsage(inputTokens: input_tokens, outputTokens: output_tokens)
+    }
+
+    var openAIUsage: LLMTokenUsage {
+        LLMTokenUsage(inputTokens: prompt_tokens, outputTokens: completion_tokens)
+    }
 }
 
 struct SSEBlock: Decodable {

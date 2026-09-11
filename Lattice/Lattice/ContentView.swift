@@ -580,6 +580,8 @@ final class ChatViewModel: ObservableObject {
     private let transcriptScrollMinInterval: TimeInterval = 0.09
 
     @Published private(set) var pendingRetry: PendingRetryState?
+    /// Token usage reported by the provider for the most recent completed turn.
+    @Published private(set) var lastTurnUsage: LLMTokenUsage?
     /// Completed-turn restore points (newest at end); headers only for UI.
     @Published private(set) var chatRestorePointHeaders: [LatticeChatRestorePointHeader] = []
 
@@ -832,6 +834,7 @@ final class ChatViewModel: ObservableObject {
             persistSession()
             isRunning = true
             livePhase = .build
+            lastTurnUsage = nil
             requestTranscriptScrollToBottom(immediate: true)
             compactionRunForThisAgentBurst = false
             agentTask = Task {
@@ -873,6 +876,7 @@ final class ChatViewModel: ObservableObject {
         persistSession()
         isRunning = true
         livePhase = .idea
+        lastTurnUsage = nil
         requestTranscriptScrollToBottom(immediate: true)
         compactionRunForThisAgentBurst = false
         agentTask = Task {
@@ -961,6 +965,7 @@ final class ChatViewModel: ObservableObject {
 
         isRunning = true
         livePhase = .idea
+        lastTurnUsage = nil
         compactionRunForThisAgentBurst = false
         conversationHistory.append(["role": "user", "content": outbound])
         if showUserBubble {
@@ -1196,9 +1201,10 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
                             items.append(item)
                             requestTranscriptScrollToBottom(immediate: true)
 
-                        case .done(let reason, let blocks):
+                        case .done(let reason, let blocks, let usage):
                             stopReason = reason
                             finishedBlocks = blocks
+                            lastTurnUsage = usage
 
                             if let i = streamingReasoningIdx {
                                 items[i].finalizeReasoning()
@@ -1391,7 +1397,7 @@ private enum ChatDisplayRow: Identifiable {
 }
 
 // MARK: - History restore UI
-// TODO(lattice-history-ui): Re-enable and polish HistoryRestoreSheet in toolbar once restore behavior is fully validated end-to-end.
+
 private struct HistoryRestoreSheet: View {
     /// Chronological checkpoints (oldest → newest).
     let checkpoints: [LatticeChatRestorePointHeader]
@@ -1524,9 +1530,7 @@ struct ContentView: View {
 
     @StateObject private var viewModel: ChatViewModel
     @StateObject private var recentStore = RecentProjectsStore()
-    @AppStorage("anthropicAPIKey") private var anthropicKey = ""
-    @AppStorage("openAIAPIKey") private var openAIKey = ""
-    @AppStorage("zaiAPIKey") private var zaiKey = ""
+    @ObservedObject private var keyStore = APIKeyStore.shared
     @AppStorage("zaiUseCodingEndpoint") private var zaiUseCodingEndpoint = true
     @AppStorage("selectedProvider") private var selectedProvider = "anthropic"
     @AppStorage("selectedSimulatorID") private var selectedSimulatorID = ""
@@ -1568,6 +1572,7 @@ struct ContentView: View {
     ]
 
     @State private var showConsoleSheet = false
+    @State private var showHistoryRestore = false
     @State private var consoleSearch = ""
     @State private var sidebarLayoutScrollToken: UInt = 0
 
@@ -1579,11 +1584,7 @@ struct ContentView: View {
     }
 
     private var activeAPIKey: String {
-        switch LLMProvider(rawValue: selectedProvider) ?? .anthropic {
-        case .anthropic: return anthropicKey
-        case .openAI: return openAIKey
-        case .zai: return zaiKey
-        }
+        keyStore.key(for: LLMProvider(rawValue: selectedProvider) ?? .anthropic)
     }
 
     private var selectedProviderOption: LLMProvider {
@@ -2024,7 +2025,18 @@ struct ContentView: View {
                 .help(showConsoleSheet ? "Hide Console" : "Show Console")
                 .controlSize(.small)
             }
-            // TODO(lattice-history-ui): Restore this toolbar entry after full regression pass.
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showHistoryRestore = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .help("History")
+                .disabled(viewModel.isRunning || viewModel.chatRestorePointHeaders.isEmpty)
+                .controlSize(.small)
+            }
         }
         if !showProjectHub {
             ToolbarItem(placement: .automatic) {
@@ -2149,6 +2161,22 @@ struct ContentView: View {
         .sheet(item: $composerEditingAttachment) { attachment in
             LatticeImageEditorSheet(attachment: attachment) { edited in
                 replaceComposerAttachment(attachment, with: edited)
+            }
+        }
+        .sheet(isPresented: $showHistoryRestore) {
+            HistoryRestoreSheet(
+                checkpoints: viewModel.chatRestorePointHeaders,
+                isBusy: viewModel.isRunning,
+                onRestore: { selectedId, chatTargetId, restoredPrompt in
+                    viewModel.restoreHistory(selectedPointId: selectedId, chatPointId: chatTargetId)
+                    if !restoredPrompt.isEmpty {
+                        input = restoredPrompt
+                        composerHeight = 42
+                    }
+                }
+            )
+            .onAppear {
+                viewModel.reloadChatRestorePointHeaders()
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -2591,8 +2619,16 @@ struct ContentView: View {
                         }
                         let rows = buildChatDisplayRows(from: viewModel.items)
                         let restoreActionsByRowId = assistantTurnRestoreActions(for: rows)
+                        let latestTurnRowId = rows.last { row in
+                            if case .assistantTurn = row { return true }
+                            return false
+                        }?.id
                         ForEach(rows) { row in
-                            transcriptRowView(row, restoreActionsByRowId: restoreActionsByRowId)
+                            transcriptRowView(
+                                row,
+                                restoreActionsByRowId: restoreActionsByRowId,
+                                latestTurnRowId: latestTurnRowId
+                            )
                             .id(row.id)
                         }
                     }
@@ -2626,7 +2662,8 @@ struct ContentView: View {
     @ViewBuilder
     private func transcriptRowView(
         _ row: ChatDisplayRow,
-        restoreActionsByRowId: [UUID: (checkpointId: UUID, prompt: String)]
+        restoreActionsByRowId: [UUID: (checkpointId: UUID, prompt: String)],
+        latestTurnRowId: UUID?
     ) -> some View {
         switch row {
         case .user(let item):
@@ -2650,6 +2687,7 @@ struct ContentView: View {
                 reduceMotion: reduceMotion,
                 pendingRetry: viewModel.pendingRetry,
                 canRestoreLastPass: restoreAction != nil,
+                usage: anchorId == latestTurnRowId ? viewModel.lastTurnUsage : nil,
                 onRetry: {
                     viewModel.performRetry(apiKey: activeAPIKey, context: chatContext)
                 },
@@ -4715,6 +4753,7 @@ private struct AssistantTurnCard: View {
     var reduceMotion: Bool = false
     var pendingRetry: PendingRetryState?
     var canRestoreLastPass: Bool = false
+    var usage: LLMTokenUsage?
     var onRetry: () -> Void
     var onRestoreLastPass: () -> Void
 
@@ -4992,6 +5031,12 @@ private struct AssistantTurnCard: View {
                 DirectorPhaseChip(phase: livePhase)
             }
             Spacer(minLength: 0)
+            if isTurnComplete, let usageCaption = usage?.caption {
+                Text(usageCaption)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .help("Tokens used by the provider for this turn")
+            }
         }
         .padding(.bottom, 8)
     }
