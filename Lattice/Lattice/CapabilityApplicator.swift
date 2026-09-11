@@ -154,6 +154,11 @@ enum CapabilityApplicator {
             changedFiles.insert(seedURL)
         }
 
+        // 5.6 Capability-specific pbxproj surgery (beyond build settings).
+        if capability.id == "widgets" {
+            pbxText = try PbxprojEditor.addWidgetExtension(in: pbxText, appName: appName)
+        }
+
         // 6. Write the modified pbxproj if it changed.
         if pbxText != originalPbx {
             do {

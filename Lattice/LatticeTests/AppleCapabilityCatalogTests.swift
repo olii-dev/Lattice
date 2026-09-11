@@ -2,8 +2,8 @@ import Testing
 @testable import Lattice
 
 @Suite struct AppleCapabilityCatalogTests {
-    @Test func catalogHasNineCapabilities() {
-        #expect(AppleCapabilityCatalog.all.count == 9)
+    @Test func catalogHasTenCapabilities() {
+        #expect(AppleCapabilityCatalog.all.count == 10)
     }
 
     @Test func swiftdataCapabilityHasSeedFileAndNoEntitlements() {

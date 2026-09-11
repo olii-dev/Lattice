@@ -292,6 +292,120 @@ enum AppleCapabilityCatalog {
         applicablePlatforms: [.iOS, .macOS, .watchOS]
     )
 
+    static let widgets = AppleCapability(
+        id: "widgets",
+        displayName: "Home Screen Widgets",
+        summary: "Add a WidgetKit extension target with a starter widget for the Home Screen.",
+        entitlements: [],
+        infoPlistKeys: [],
+        frameworks: ["WidgetKit.framework"],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)Widgets/$(AppName)WidgetsBundle.swift",
+                contents: """
+                import WidgetKit
+                import SwiftUI
+
+                // Starter widget. Add more Widget types to the bundle below, give them
+                // timelines from your app's data (e.g. SwiftData via an app group), and
+                // customize the view. Widgets reload on their own schedule.
+
+                struct SampleEntry: TimelineEntry {
+                    let date: Date
+                }
+
+                struct SampleProvider: TimelineProvider {
+                    func placeholder(in context: Context) -> SampleEntry {
+                        SampleEntry(date: .now)
+                    }
+
+                    func getSnapshot(in context: Context, completion: @escaping (SampleEntry) -> Void) {
+                        completion(SampleEntry(date: .now))
+                    }
+
+                    func getTimeline(in context: Context, completion: @escaping (Timeline<SampleEntry>) -> Void) {
+                        let entries = [SampleEntry(date: .now)]
+                        completion(Timeline(entries: entries, policy: .atEnd))
+                    }
+                }
+
+                struct SampleWidgetView: View {
+                    var entry: SampleEntry
+
+                    var body: some View {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.headline)
+                                .foregroundStyle(.tint)
+                            Text("Hello from the widget!")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(entry.date, style: .time)
+                                .font(.title3.weight(.semibold))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .padding()
+                    }
+                }
+
+                struct SampleWidget: Widget {
+                    var body: some WidgetConfiguration {
+                        StaticConfiguration(kind: "SampleWidget", provider: SampleProvider.self) { entry in
+                            SampleWidgetView(entry: entry)
+                        }
+                        .configurationDisplayName("Sample Widget")
+                        .description("A starter widget you can customize.")
+                        .supportedFamilies([.systemSmall, .systemMedium])
+                    }
+                }
+
+                @main
+                struct SampleWidgetBundle: WidgetBundle {
+                    var body: some Widget {
+                        SampleWidget()
+                    }
+                }
+                """
+            ),
+            CapabilitySeedFile(
+                relativePath: "$(AppName)Widgets/Info.plist",
+                contents: """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                    <key>CFBundleDevelopmentRegion</key>
+                    <string>$(DEVELOPMENT_LANGUAGE)</string>
+                    <key>CFBundleDisplayName</key>
+                    <string>Widgets</string>
+                    <key>CFBundleExecutable</key>
+                    <string>$(EXECUTABLE_NAME)</string>
+                    <key>CFBundleIdentifier</key>
+                    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+                    <key>CFBundleInfoDictionaryVersion</key>
+                    <string>6.0</string>
+                    <key>CFBundleName</key>
+                    <string>$(PRODUCT_NAME)</string>
+                    <key>CFBundlePackageType</key>
+                    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+                    <key>CFBundleShortVersionString</key>
+                    <string>1.0</string>
+                    <key>CFBundleVersion</key>
+                    <string>1</string>
+                    <key>NSExtension</key>
+                    <dict>
+                        <key>NSExtensionPointIdentifier</key>
+                        <string>com.apple.widgetkit-extension</string>
+                    </dict>
+                </dict>
+                </plist>
+                """
+            ),
+        ],
+        provisioningNotes: "The widget extension is a separate target that archives together with the app — TestFlight uploads include it automatically.",
+        applicablePlatforms: [.iOS, .macOS]
+    )
+
     /// All supported capabilities, in display order.
     static let all: [AppleCapability] = [
         appGroups,
@@ -303,6 +417,7 @@ enum AppleCapabilityCatalog {
         cloudkitSync,
         healthkit,
         appIntents,
+        widgets,
     ]
 
     /// Look up a capability by id. Returns nil if unknown.
