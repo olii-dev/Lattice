@@ -7,6 +7,9 @@ struct LatticeApp: App {
     @StateObject private var consoleStore = LatticeConsoleStore()
 
     init() {
+        UserDefaults.standard.register(defaults: [
+            "latticeRequireWriteApproval": true,
+        ])
         APIKeyStore.migrateLegacyKeysFromUserDefaults()
         LLMModelSelectionMigration.migrateStoredSelection()
     }

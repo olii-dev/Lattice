@@ -15,6 +15,7 @@ struct AccountSettingsView: View {
     @AppStorage("latticeLocalRunDestination") private var latticeLocalRunDestinationRaw = LatticeLocalRunDestination.iOSSimulator.rawValue
     @AppStorage("latticeAppearancePreference") private var latticeAppearancePreference = "system"
     @AppStorage("latticeShowComposerTips") private var latticeShowComposerTips = true
+    @AppStorage(ChatViewModel.writeApprovalDefaultsKey) private var latticeRequireWriteApproval = true
     @AppStorage("latticeAccentTag") private var latticeAccentTag = "system"
     @AppStorage("latticeGlobalDevelopmentTeam") private var latticeGlobalDevelopmentTeam = ""
 
@@ -142,10 +143,12 @@ struct AccountSettingsView: View {
                 .pickerStyle(.menu)
 
                 Toggle("Show composer tips", isOn: $latticeShowComposerTips)
+
+                Toggle("Review file changes before applying", isOn: $latticeRequireWriteApproval)
             } header: {
                 Text("Appearance")
             } footer: {
-                Text("Applies to the main Lattice window.")
+                Text("Applies to the main Lattice window. File review pauses the AI before it writes a file, so you can approve each change.")
             }
 
             Section {

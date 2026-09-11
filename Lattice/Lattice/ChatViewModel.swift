@@ -18,6 +18,17 @@ struct PendingRetryState: Equatable {
     let resumeFromLastStableStep: Bool
 }
 
+/// A `write_file` change awaiting user review. The diff between `oldContent` and
+/// `newContent` is rendered in the approval card.
+struct PendingFileApproval: Identifiable, Equatable {
+    let id = UUID()
+    let path: String
+    let oldContent: String
+    let newContent: String
+
+    var fileName: String { (path as NSString).lastPathComponent }
+}
+
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var items: [ChatItem] = []
@@ -59,6 +70,8 @@ final class ChatViewModel: ObservableObject {
     private let transcriptScrollMinInterval: TimeInterval = 0.09
 
     @Published private(set) var pendingRetry: PendingRetryState?
+    /// A `write_file` change awaiting user review; non-nil pauses the agent loop.
+    @Published private(set) var pendingFileApproval: PendingFileApproval?
     /// Token usage reported by the provider for the most recent completed turn.
     @Published private(set) var lastTurnUsage: LLMTokenUsage?
     /// Completed-turn restore points (newest at end); headers only for UI.
@@ -185,6 +198,12 @@ final class ChatViewModel: ObservableObject {
             agentTask = nil
             isRunning = false
         }
+        // A suspended write approval would otherwise leak its continuation.
+        if pendingFileApproval != nil || writeApprovalContinuation != nil {
+            pendingFileApproval = nil
+            writeApprovalContinuation?.resume(returning: false)
+            writeApprovalContinuation = nil
+        }
 
         pendingRetry = nil
         if !items.isEmpty || !conversationHistory.isEmpty {
@@ -235,6 +254,38 @@ final class ChatViewModel: ObservableObject {
 
     private func noteTranscriptScrollIntent() {
         requestTranscriptScrollToBottom(immediate: false)
+    }
+
+    // MARK: - Write approval (diff review)
+
+    /// When true (default), model `write_file` calls pause for user review first.
+    static let writeApprovalDefaultsKey = "latticeRequireWriteApproval"
+
+    static var writeApprovalRequired: Bool {
+        UserDefaults.standard.object(forKey: writeApprovalDefaultsKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: writeApprovalDefaultsKey)
+    }
+
+    private var writeApprovalContinuation: CheckedContinuation<Bool, Never>?
+
+    /// Suspends the agent loop until the user approves or rejects the pending diff.
+    private func requestWriteApproval(_ approval: PendingFileApproval) async -> Bool {
+        pendingFileApproval = approval
+        requestTranscriptScrollToBottom(immediate: true)
+        let approved = await withCheckedContinuation { continuation in
+            writeApprovalContinuation = continuation
+        }
+        pendingFileApproval = nil
+        writeApprovalContinuation = nil
+        return approved
+    }
+
+    /// Called by the approval card. Resumes the paused agent loop.
+    func resolveWriteApproval(_ approved: Bool) {
+        writeApprovalContinuation?.resume(returning: approved)
+        writeApprovalContinuation = nil
+        pendingFileApproval = nil
     }
 
     private func appendAssistantFailure(_ message: String) {
@@ -778,7 +829,33 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
                 } else {
                     writeUndo = nil
                 }
-                let (output, isError) = await executor.execute(name: toolName, input: input)
+
+                let (output, isError): (String, Bool)
+                if toolName == "write_file",
+                   Self.writeApprovalRequired,
+                   let path = input["path"] as? String,
+                   let newContent = input["content"] as? String {
+                    // Pause the loop and let the user review the diff before anything lands.
+                    let oldContent = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                    let approved = await requestWriteApproval(
+                        PendingFileApproval(path: path, oldContent: oldContent, newContent: newContent)
+                    )
+                    guard !Task.isCancelled else {
+                        conversationHistory.removeLast()
+                        return
+                    }
+                    if approved {
+                        (output, isError) = await executor.execute(name: toolName, input: input)
+                    } else {
+                        (output, isError) = (
+                            "The user reviewed the diff and declined this change. Ask what they'd like adjusted, or propose a different approach.",
+                            true
+                        )
+                    }
+                } else {
+                    (output, isError) = await executor.execute(name: toolName, input: input)
+                }
+
                 if toolName == "write_file", let u = writeUndo, !isError {
                     burstFileUndos.append(u)
                 }

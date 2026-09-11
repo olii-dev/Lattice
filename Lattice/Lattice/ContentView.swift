@@ -1093,6 +1093,20 @@ struct ContentView: View {
                                 )
                         )
                 }
+                if let approval = viewModel.pendingFileApproval {
+                    WriteApprovalCard(approval: approval) { approved in
+                        viewModel.resolveWriteApproval(approved)
+                    }
+                    .padding(.horizontal, 12)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
+                            )
+                    )
+                }
                 inputBar
             }
             // Inspector column resizes the chat strip every frame; implicit animations + nested Materials
@@ -1940,6 +1954,158 @@ struct ContentView: View {
     }
 
     // MARK: - Input bar
+
+    /// Review card shown when the model wants to write a file: rendered diff plus
+    /// approve/reject. Shown directly above the composer.
+    private struct WriteApprovalCard: View {
+        let approval: PendingFileApproval
+        let onResolve: (_ approved: Bool) -> Void
+
+        @State private var expanded = true
+
+        private var diff: UnifiedDiff.Result {
+            UnifiedDiff.generate(old: approval.oldContent, new: approval.newContent)
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.badge.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Review change")
+                            .font(.subheadline.weight(.semibold))
+                        Text(approval.fileName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 8)
+                    if diff.addedCount > 0 || diff.removedCount > 0 {
+                        Text("+\(diff.addedCount) −\(diff.removedCount)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if expanded {
+                    diffBody
+                        .frame(maxHeight: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
+
+                    HStack(spacing: 8) {
+                        Button {
+                            onResolve(true)
+                        } label: {
+                            Label("Apply", systemImage: "checkmark")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+
+                        Button(role: .destructive) {
+                            onResolve(false)
+                        } label: {
+                            Label("Decline", systemImage: "xmark")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(LatticeDesign.Spacing.m)
+            .background(
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+            )
+        }
+
+        @ViewBuilder
+        private var diffBody: some View {
+            if diff.lines.isEmpty {
+                Text("No visible changes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView([.vertical, .horizontal]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
+                            diffLineRow(line)
+                        }
+                        if diff.isTruncated {
+                            Text("… \(diff.omittedCount) unchanged lines hidden …")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 3)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
+                        .fill(Color.primary.opacity(0.035))
+                )
+            }
+        }
+
+        private func diffLineRow(_ line: UnifiedDiff.Line) -> some View {
+            HStack(alignment: .top, spacing: 0) {
+                Text(line.oldNumber.map(String.init) ?? "")
+                    .frame(width: 34, alignment: .trailing)
+                Text(line.newNumber.map(String.init) ?? "")
+                    .frame(width: 34, alignment: .trailing)
+                Text(prefix(for: line.kind))
+                    .frame(width: 16, alignment: .center)
+                Text(line.text)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(color(for: line.kind))
+            .background(background(for: line.kind))
+            .padding(.vertical, 1)
+        }
+
+        private func prefix(for kind: UnifiedDiff.Line.Kind) -> String {
+            switch kind {
+            case .same: " "
+            case .added: "+"
+            case .removed: "−"
+            }
+        }
+
+        private func color(for kind: UnifiedDiff.Line.Kind) -> Color {
+            switch kind {
+            case .same: .secondary
+            case .added: .green
+            case .removed: .red
+            }
+        }
+
+        private func background(for kind: UnifiedDiff.Line.Kind) -> Color {
+            switch kind {
+            case .same: .clear
+            case .added: .green.opacity(0.10)
+            case .removed: .red.opacity(0.10)
+            }
+        }
+    }
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 4) {
