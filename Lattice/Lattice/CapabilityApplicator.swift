@@ -133,30 +133,39 @@ enum CapabilityApplicator {
         )
         changedFiles.formUnion(plistChangedFiles)
 
-        // 5.5 Seed files — created only when missing; existing files are never touched
-        // (they may contain user edits by now) and removal never deletes them.
-        for seed in capability.seedFiles {
-            let relPath = seed.relativePath
-                .replacingOccurrences(of: "$(AppName)", with: appName)
-            let seedURL = projectRoot.appendingPathComponent(relPath)
-            guard !FileManager.default.fileExists(atPath: seedURL.path) else { continue }
-            do {
-                try FileManager.default.createDirectory(
-                    at: seedURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try seed.contents.write(to: seedURL, atomically: true, encoding: .utf8)
-            } catch {
-                throw CapabilityApplicatorError.entitlementsWriteFailed(
-                    "Could not write seed file \(relPath): \(error.localizedDescription)"
-                )
-            }
-            changedFiles.insert(seedURL)
+        // 5.5 Capability-specific pre-seed pbxproj surgery: live activities need a
+        // widget extension target to live in — create it (with the widget bundle seed)
+        // when no extension exists yet.
+        let hadExtensionTarget = pbxText.contains("productType = \"com.apple.product-type.app-extension\"")
+        if capability.id == "live_activities", !hadExtensionTarget {
+            try writeSeedFiles(
+                AppleCapabilityCatalog.widgets.seedFiles,
+                appName: appName, projectRoot: projectRoot, into: &changedFiles
+            )
         }
 
-        // 5.6 Capability-specific pbxproj surgery (beyond build settings).
+        // 5.6 Seed files — created only when missing; existing files are never touched
+        // (they may contain user edits by now) and removal never deletes them.
+        try writeSeedFiles(
+            capability.seedFiles,
+            appName: appName, projectRoot: projectRoot, into: &changedFiles
+        )
+
+        // 5.7 Capability-specific pbxproj surgery (beyond build settings).
         if capability.id == "widgets" {
             pbxText = try PbxprojEditor.addWidgetExtension(in: pbxText, appName: appName)
+        }
+        if capability.id == "live_activities" {
+            if !hadExtensionTarget {
+                pbxText = try PbxprojEditor.addWidgetExtension(in: pbxText, appName: appName)
+            }
+            // Register the activity file in the extension's Sources phase (the bundle
+            // seed is registered by addWidgetExtension; this file is not).
+            pbxText = try PbxprojEditor.addSourceFileToAppExtension(
+                in: pbxText,
+                extFolderName: "\(appName)Widgets",
+                fileName: "\(appName)LiveActivity.swift"
+            )
         }
 
         // 6. Write the modified pbxproj if it changed.
@@ -178,6 +187,34 @@ enum CapabilityApplicator {
     }
 
     // MARK: - Helpers — project location
+
+    /// Writes seed files that don't yet exist (with `$(AppName)` resolution) and records
+    /// them as changed. Existing files are never touched.
+    private static func writeSeedFiles(
+        _ seeds: [CapabilitySeedFile],
+        appName: String,
+        projectRoot: URL,
+        into changedFiles: inout Set<URL>
+    ) throws {
+        for seed in seeds {
+            let relPath = seed.relativePath
+                .replacingOccurrences(of: "$(AppName)", with: appName)
+            let seedURL = projectRoot.appendingPathComponent(relPath)
+            guard !FileManager.default.fileExists(atPath: seedURL.path) else { continue }
+            do {
+                try FileManager.default.createDirectory(
+                    at: seedURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try seed.contents.write(to: seedURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw CapabilityApplicatorError.entitlementsWriteFailed(
+                    "Could not write seed file \(relPath): \(error.localizedDescription)"
+                )
+            }
+            changedFiles.insert(seedURL)
+        }
+    }
 
     /// Finds the `.xcodeproj` in `projectRoot`, or returns `projectRoot` itself if it is a
     /// `.xcodeproj`. Throws `noXcodeProject` if none is found.

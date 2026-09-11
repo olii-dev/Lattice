@@ -406,6 +406,84 @@ enum AppleCapabilityCatalog {
         applicablePlatforms: [.iOS, .macOS]
     )
 
+    static let liveActivities = AppleCapability(
+        id: "live_activities",
+        displayName: "Live Activities",
+        summary: "Show real-time updates on the Lock Screen and Dynamic Island with ActivityKit.",
+        entitlements: [],
+        infoPlistKeys: [
+            PlistEntry(key: "NSSupportsLiveActivities", value: true)
+        ],
+        frameworks: [],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)Widgets/$(AppName)LiveActivity.swift",
+                contents: """
+                import ActivityKit
+                import WidgetKit
+                import SwiftUI
+
+                // Starter Live Activity. Model your real update data in the attributes
+                // below, show it in the views, start it from the app with
+                // Activity.request(attributes:content:), and end it with activity.end(...).
+                // Remember to add LiveActivityWidget() to the WidgetBundle so it ships.
+
+                struct SampleActivityAttributes: ActivityAttributes {
+                    public struct ContentState: Codable, Hashable {
+                        var status: String
+                    }
+                    var itemName: String
+                }
+
+                struct LiveActivityWidget: Widget {
+                    var body: some WidgetConfiguration {
+                        ActivityConfiguration(for: SampleActivityAttributes.self) { context in
+                            // Lock Screen / banner presentation.
+                            HStack(spacing: 12) {
+                                Image(systemName: "shippingbox.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.tint)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(context.attributes.itemName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(context.state.status)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding()
+                        } dynamicIsland: { context in
+                            DynamicIsland {
+                                DynamicIslandExpandedRegion(.leading) {
+                                    Image(systemName: "shippingbox.fill")
+                                        .foregroundStyle(.tint)
+                                }
+                                DynamicIslandExpandedRegion(.center) {
+                                    Text(context.attributes.itemName)
+                                        .font(.caption.weight(.semibold))
+                                }
+                                DynamicIslandExpandedRegion(.trailing) {
+                                    Text(context.state.status)
+                                        .font(.caption)
+                                }
+                            } compactLeading: {
+                                Image(systemName: "shippingbox.fill")
+                            } compactTrailing: {
+                                Text(context.state.status)
+                                    .font(.caption2)
+                            } minimal: {
+                                Image(systemName: "shippingbox.fill")
+                            }
+                        }
+                    }
+                }
+                """
+            ),
+        ],
+        provisioningNotes: "Live Activities require iOS 16.1 or later. Add LiveActivityWidget() to the WidgetBundle if the Widgets capability was set up first.",
+        applicablePlatforms: [.iOS]
+    )
+
     /// All supported capabilities, in display order.
     static let all: [AppleCapability] = [
         appGroups,
@@ -418,6 +496,7 @@ enum AppleCapabilityCatalog {
         healthkit,
         appIntents,
         widgets,
+        liveActivities,
     ]
 
     /// Look up a capability by id. Returns nil if unknown.

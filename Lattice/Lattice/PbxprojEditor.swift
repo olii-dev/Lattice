@@ -36,8 +36,11 @@ enum PbxprojEditor {
 
     /// Returns the range covering the full `{ ... }` block (including the leading id comment) for
     /// the given `XCBuildConfiguration` id.
+    ///
+    /// The anchor requires a line start (newline + exactly two tabs) so child *references* to the
+    /// same id deeper inside other blocks (e.g. `buildPhases = (...)` entries) don't match.
     static func blockRange(forConfigurationID id: String, in pbx: String) -> Range<String.Index>? {
-        let anchor = "\t\t\(id) /*"
+        let anchor = "\n\t\t\(id) /*"
         guard let start = pbx.range(of: anchor) else { return nil }
         guard let brace = pbx[start.upperBound...].firstIndex(of: "{") else { return nil }
         var depth = 0
@@ -65,10 +68,11 @@ enum PbxprojEditor {
         if let regex = try? NSRegularExpression(pattern: linePattern, options: []) {
             let ns = block as NSString
             let full = NSRange(location: 0, length: ns.length)
-            let replacement = "\t\t\t\t\(key) = \(value);"
-            let replaced = regex.stringByReplacingMatches(in: block, options: [], range: full, withTemplate: replacement)
-            if replaced != block {
-                return replaced
+            // Replace only when the setting line actually exists — an unchanged value
+            // produces an identical string, which must not be mistaken for "no match".
+            if regex.numberOfMatches(in: block, options: [], range: full) > 0 {
+                let replacement = "\t\t\t\t\(key) = \(value);"
+                return regex.stringByReplacingMatches(in: block, options: [], range: full, withTemplate: replacement)
             }
         }
         guard let insertAt = block.range(of: "buildSettings = {") else { return block }
@@ -733,5 +737,95 @@ enum PbxprojEditor {
             return nil
         }
         return ns.substring(with: match.range(at: 1))
+    }
+
+    /// Registers a Swift source file inside the (first) app-extension target: file reference,
+    /// build file, and an entry in the extension's Sources phase. Idempotent — a file whose
+    /// reference already exists is left untouched.
+    static func addSourceFileToAppExtension(
+        in pbx: String, extFolderName: String, fileName: String
+    ) throws -> String {
+        // Idempotency: the file reference already exists → nothing to do.
+        if pbx.contains("path = \(fileName);") {
+            return pbx
+        }
+
+        let existing = Set(hexIDs(in: pbx))
+        func nextID() -> String {
+            var id = generateUniqueHexID(avoiding: existing)
+            while existing.contains(id) {
+                id = generateUniqueHexID(avoiding: existing)
+            }
+            return id
+        }
+        let fileRefID = nextID()
+        let buildFileID = nextID()
+
+        var out = pbx
+        out = try insertIntoSection(
+            out, section: "PBXBuildFile",
+            entries: [
+                "\t\t\(buildFileID) /* \(fileName) in Sources */ = {isa = PBXBuildFile; fileRef = \(fileRefID) /* \(fileName) */; };",
+            ]
+        )
+        out = try insertIntoSection(
+            out, section: "PBXFileReference",
+            entries: [
+                "\t\t\(fileRefID) /* \(fileName) */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = \(fileName); sourceTree = \"<group>\"; };",
+            ]
+        )
+
+        // Attach the file reference to the extension group.
+        let groupAnchor = "\n\t\t\tpath = \(extFolderName);"
+        guard let groupLineRange = out.range(of: groupAnchor) else {
+            throw WidgetExtensionError.sectionInsertionFailed("extension group for \(extFolderName)")
+        }
+        // Walk back to this group's `children = (` — it precedes `path` in the group block.
+        let head = out[..<groupLineRange.lowerBound]
+        guard let childrenRange = head.range(of: "children = (\n", options: .backwards) else {
+            throw WidgetExtensionError.sectionInsertionFailed("children list for \(extFolderName)")
+        }
+        out.insert(contentsOf: "\t\t\t\t\(fileRefID) /* \(fileName) */,\n", at: childrenRange.upperBound)
+
+        // Find the extension target's Sources phase and add the build file.
+        guard let extTargetRange = out.range(of: "productType = \"com.apple.product-type.app-extension\";") else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        let targetHead = out[..<extTargetRange.lowerBound]
+        guard let targetBlockOpen = targetHead.range(of: "= {", options: .backwards) else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        // The target block ends before the productType line; scan from the block open to it.
+        let targetBlockText = String(out[targetBlockOpen.upperBound..<extTargetRange.lowerBound])
+        guard let phasesRange = targetBlockText.range(of: "buildPhases = (") else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        let afterPhases = targetBlockText[phasesRange.upperBound...]
+        guard let closeParen = afterPhases.range(of: ");") else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        let phaseIDs = hexIDs(in: String(afterPhases[..<closeParen.lowerBound]))
+
+        var sourcesPhaseBlockRange: Range<String.Index>?
+        for phaseID in phaseIDs {
+            guard let range = blockRange(forConfigurationID: phaseID, in: out) else { continue }
+            let block = String(out[range])
+            if block.contains("isa = PBXSourcesBuildPhase;") {
+                sourcesPhaseBlockRange = range
+                break
+            }
+        }
+        guard let sourcesRange = sourcesPhaseBlockRange else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        let sourcesBlock = String(out[sourcesRange])
+        guard let filesRange = sourcesBlock.range(of: "files = (\n") else {
+            throw WidgetExtensionError.noAppTargetBuildPhases
+        }
+        let offset = sourcesBlock.distance(from: sourcesBlock.startIndex, to: filesRange.upperBound)
+        let insertionIndex = out.index(sourcesRange.lowerBound, offsetBy: offset)
+        out.insert(contentsOf: "\t\t\t\t\(buildFileID) /* \(fileName) in Sources */,\n", at: insertionIndex)
+
+        return out
     }
 }
