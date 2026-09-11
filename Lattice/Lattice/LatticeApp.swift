@@ -6,6 +6,10 @@ struct LatticeApp: App {
     @StateObject private var generationState = LatticeGenerationState()
     @StateObject private var consoleStore = LatticeConsoleStore()
 
+    init() {
+        APIKeyStore.migrateLegacyKeysFromUserDefaults()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView(
