@@ -1461,9 +1461,25 @@ struct ContentView: View {
         }
         .task {
             viewModel.syncProjectPath(selectedProjectPath)
+            viewModel.updateToolRunContext(
+                simulatorUDID: selectedSimulatorID.isEmpty ? nil : selectedSimulatorID,
+                appBundleID: effectiveBundleIdentifierForContext
+            )
             consoleStore.setVisibleProject(path: selectedProjectPath)
             simulatorStore.refresh()
             refreshProjectDerivedSettings()
+        }
+        .onChange(of: selectedSimulatorID) { _, newValue in
+            viewModel.updateToolRunContext(
+                simulatorUDID: newValue.isEmpty ? nil : newValue,
+                appBundleID: effectiveBundleIdentifierForContext
+            )
+        }
+        .onChange(of: resolvedProjectBundleIdentifier) { _, _ in
+            viewModel.updateToolRunContext(
+                simulatorUDID: selectedSimulatorID.isEmpty ? nil : selectedSimulatorID,
+                appBundleID: effectiveBundleIdentifierForContext
+            )
         }
         .onAppear {
             generationState.isGenerating = viewModel.isRunning

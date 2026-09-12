@@ -45,8 +45,16 @@ final class ChatViewModel: ObservableObject {
 
     private let service = LLMService()
     private var executor: ToolExecutor {
-        ToolExecutor(projectRootPath: scopedProjectPath.isEmpty ? nil : scopedProjectPath)
+        ToolExecutor(
+            projectRootPath: scopedProjectPath.isEmpty ? nil : scopedProjectPath,
+            simulatorUDID: toolSimulatorUDID,
+            appBundleID: toolAppBundleID
+        )
     }
+    /// Selected simulator for `simulator_use`; set by the view alongside run-target changes.
+    private var toolSimulatorUDID: String?
+    /// The project app's bundle ID (default launch target for `simulator_use`).
+    private var toolAppBundleID: String?
     private weak var consoleStore: LatticeConsoleStore?
     private var conversationHistory: [[String: Any]] = []
     private var agentTask: Task<Void, Never>?
@@ -574,6 +582,12 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
         persistSession()
     }
 
+    /// Keeps `simulator_use` pointed at the current run target and app identity.
+    func updateToolRunContext(simulatorUDID: String?, appBundleID: String?) {
+        toolSimulatorUDID = simulatorUDID
+        toolAppBundleID = appBundleID
+    }
+
     func clear() {
         items.removeAll()
         conversationHistory.removeAll()
@@ -879,8 +893,17 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
                     requestTranscriptScrollToBottom(immediate: true)
                 }
 
+                // Show the model the outcome of a UI-changing simulator action.
+                var screenshotPath: String?
+                if toolName == "simulator_use", !isError,
+                   let action = input["action"] as? String,
+                   ["screenshot", "end_session", "home"].contains(action) == false,
+                   let udid = executor.simulatorUDID {
+                    screenshotPath = try? await SimulatorScreenshot.capture(deviceUDID: udid).path
+                }
+
                 toolResults.append(toolResultMessage(
-                    toolUseId: toolId, content: output, isError: isError
+                    toolUseId: toolId, content: output, isError: isError, screenshotPath: screenshotPath
                 ))
                 livePhase = .verify
             }

@@ -265,7 +265,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "DEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Resources\"\nmkdir -p \"${DEST}\"\nrm -rf \"${DEST}/ProjectTemplates\"\ncp -R \"${SRCROOT}/ProjectTemplates\" \"${DEST}/\"\n";
+			shellScript = "DEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Resources\"\nmkdir -p \"${DEST}\"\nrm -rf \"${DEST}/ProjectTemplates\"\ncp -R \"${SRCROOT}/ProjectTemplates\" \"${DEST}/\"\nrm -rf \"${DEST}/SimDriver\"\ncp -R \"${SRCROOT}/SimDriver\" \"${DEST}/\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

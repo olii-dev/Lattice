@@ -191,6 +191,28 @@ struct LLMService {
             ]
         ],
         [
+            "name": "simulator_use",
+            "description": "Drive the running app in the selected simulator like a user: launch it, tap by coordinates or by element label, type text, and swipe. Use this after build+run to verify that screens and flows actually work, and to try the user's requested interactions before replying.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "action": [
+                        "type": "string",
+                        "enum": ["launch", "terminate", "tap", "tap_element", "type", "swipe", "home", "screenshot", "end_session"],
+                        "description": "The interaction to perform."
+                    ],
+                    "bundle_id": ["type": "string", "description": "App bundle ID for launch/terminate. Optional for launch (defaults to the current project's app)."],
+                    "x": ["type": "number", "description": "Tap position, 0-1 normalized from the left. For tap."],
+                    "y": ["type": "number", "description": "Tap position, 0-1 normalized from the top. For tap."],
+                    "element_type": ["type": "string", "enum": ["button", "text", "textfield"], "description": "Optional element type hint for tap_element."],
+                    "label": ["type": "string", "description": "Visible label of the element to tap. For tap_element."],
+                    "text": ["type": "string", "description": "Text to type into the focused field. For type."],
+                    "direction": ["type": "string", "enum": ["up", "down", "left", "right"], "description": "For swipe."]
+                ],
+                "required": ["action"]
+            ]
+        ],
+        [
             "name": "add_capability",
             "description": "Add an Apple capability to the current project. Updates entitlements, Info.plist, and project build settings correctly and idempotently. Always use this instead of hand-editing entitlements or project.pbxproj for capabilities.",
             "input_schema": [
@@ -198,7 +220,7 @@ struct LLMService {
                 "properties": [
                     "capability": [
                         "type": "string",
-                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes"],
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities"],
                         "description": "The capability to add."
                     ],
                     "parameters": [
@@ -218,7 +240,7 @@ struct LLMService {
                 "properties": [
                     "capability": [
                         "type": "string",
-                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes"],
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities"],
                         "description": "The capability to remove."
                     ]
                 ],
@@ -591,17 +613,39 @@ struct LLMService {
                 } else if let content = msg["content"] as? [[String: Any]] {
                     var toolResults: [[String: Any]] = []
                     var contentBlocks: [[String: Any]] = []
+                    var screenshotBlocks: [[String: Any]] = []
 
                     for block in content {
                         let type = block["type"] as? String ?? ""
                         if type == "tool_result" {
                             let toolCallId = block["tool_use_id"] as? String ?? ""
-                            let output = block["content"] as? String ?? ""
-                            toolResults.append([
-                                "role": "tool",
-                                "tool_call_id": toolCallId,
-                                "content": output
-                            ])
+                            if let textContent = block["content"] as? String {
+                                toolResults.append([
+                                    "role": "tool",
+                                    "tool_call_id": toolCallId,
+                                    "content": textContent
+                                ])
+                            } else if let blocks = block["content"] as? [[String: Any]] {
+                                // Flattened text for the tool message; OpenAI forbids images
+                                // in tool results, so screenshots ride a follow-up user turn.
+                                let texts = blocks.compactMap { sub -> String? in
+                                    guard sub["type"] as? String == "text" else { return nil }
+                                    return sub["text"] as? String
+                                }
+                                toolResults.append([
+                                    "role": "tool",
+                                    "tool_call_id": toolCallId,
+                                    "content": texts.joined(separator: "\n")
+                                ])
+                                for sub in blocks where sub["type"] as? String == "image" {
+                                    if let url = openAIDataURL(fromAnthropicImage: sub) {
+                                        screenshotBlocks.append([
+                                            "type": "image_url",
+                                            "image_url": ["url": url]
+                                        ])
+                                    }
+                                }
+                            }
                         } else if type == "text" {
                             contentBlocks.append([
                                 "type": "text",
@@ -620,6 +664,14 @@ struct LLMService {
                         result.append(["role": "user", "content": onlyBlock["text"] as? String ?? ""])
                     } else if !contentBlocks.isEmpty {
                         result.append(["role": "user", "content": contentBlocks])
+                    }
+                    if !screenshotBlocks.isEmpty {
+                        var followUp: [[String: Any]] = [[
+                            "type": "text",
+                            "text": "Screenshot of the simulator after the tool calls above."
+                        ]]
+                        followUp.append(contentsOf: screenshotBlocks)
+                        result.append(["role": "user", "content": followUp])
                     }
                 }
             } else if role == "assistant" {
@@ -706,6 +758,16 @@ struct LLMService {
         return result
     }
 
+    /// Data URL for an Anthropic-style image block ({"source": {"type":"base64","media_type":...,"data":...}}).
+    private func openAIDataURL(fromAnthropicImage block: [String: Any]) -> String? {
+        guard let source = block["source"] as? [String: Any],
+              source["type"] as? String == "base64",
+              let base64 = source["data"] as? String,
+              let mediaType = source["media_type"] as? String
+        else { return nil }
+        return "data:\(mediaType);base64,\(base64)"
+    }
+
     private func openAIImageContentBlock(from block: [String: Any]) -> [String: Any]? {
         guard let payload = encodedImagePayload(from: block) else { return nil }
         return [
@@ -784,6 +846,7 @@ struct LLMService {
         - app_intents adds a starter AppIntents file (SampleIntents.swift). When active, define real AppIntents for the app's core actions so they appear in Siri, Shortcuts, and Spotlight.
         - widgets scaffolds a WidgetKit extension target with a starter widget bundle. When active, customize the widget views and timelines in the Widgets folder instead of creating new targets by hand, and share app data with widgets via App Groups (add the app_groups capability when needed).
         - live_activities adds a starter ActivityKit activity and sets NSSupportsLiveActivities. If a Widgets extension already exists, add LiveActivityWidget() to the existing WidgetBundle body; otherwise the capability creates the extension for you. Start activities from the app with Activity.request(attributes:content:).
+        - After building and launching the app, use the simulator_use tool to actually exercise it: launch the app, tap through the main flow, type into fields, and confirm screens behave as requested. A build succeeding is not the same as the app working — verify the interaction the user asked for, then fix what misbehaves. Tap by element label first and fall back to normalized coordinates.
         - For capabilities outside the supported list (Widgets, Live Activities, Associated Domains, etc.), use the web_search tool to find the correct entitlement and plist keys, then explain to the user what manual steps are needed. Do not hand-write entitlements for unsupported capabilities.
         - After add_capability returns manual steps, relay them to the user verbatim so they can complete provisioning in the Apple Developer Portal or Xcode.
         - If a valid Xcode project already exists, edit that project in place. Do not invent a second app scaffold or hand-roll a fresh project structure beside it.

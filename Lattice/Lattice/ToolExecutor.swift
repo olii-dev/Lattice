@@ -49,9 +49,19 @@ struct ToolExecutor {
     /// Project root path, passed in by the chat view so capability tools resolve
     /// the correct Xcode project. nil = not available (capability tools will error).
     let projectRootPath: String?
+    /// Selected simulator UDID for `simulator_use`. nil = the tool errors.
+    let simulatorUDID: String?
+    /// The project app's bundle ID, used as the default launch target.
+    let appBundleID: String?
 
-    init(projectRootPath: String? = nil) {
+    init(
+        projectRootPath: String? = nil,
+        simulatorUDID: String? = nil,
+        appBundleID: String? = nil
+    ) {
         self.projectRootPath = projectRootPath
+        self.simulatorUDID = simulatorUDID
+        self.appBundleID = appBundleID
     }
 
     func execute(name: String, input: [String: Any]) async -> (output: String, isError: Bool) {
@@ -61,6 +71,9 @@ struct ToolExecutor {
                 return ("Missing 'command' parameter", true)
             }
             return await runBash(command)
+
+        case "simulator_use":
+            return await runSimulatorUse(input)
 
         case "read_file":
             guard let path = input["path"] as? String else {
@@ -308,6 +321,58 @@ struct ToolExecutor {
         let head = String(text.prefix(headCount))
         let tail = String(text.suffix(tailCount))
         return "\(head)\n…[output truncated, \(omitted) characters omitted]…\n\(tail)"
+    }
+
+    // MARK: - simulator_use
+
+    /// Drives the running app in the selected simulator via the SimDriver UI-test
+    /// loop: launch, tap, type, swipe, home, terminate, screenshot.
+    private func runSimulatorUse(_ input: [String: Any]) async -> (output: String, isError: Bool) {
+        guard let action = input["action"] as? String, !action.isEmpty else {
+            return ("Missing 'action' parameter", true)
+        }
+        guard let udid = simulatorUDID, !udid.isEmpty else {
+            return ("No simulator is selected. Pick a run target first (iPhone or Apple Watch simulator).", true)
+        }
+
+        switch action {
+        case "screenshot":
+            do {
+                let url = try await SimulatorScreenshot.capture(deviceUDID: udid)
+                return ("Screenshot saved: \(url.path)", false)
+            } catch {
+                return (error.localizedDescription, true)
+            }
+
+        case "end_session":
+            await SimulatorDriverCoordinator.shared.endSession(udid: udid)
+            return ("Simulator driver session ended.", false)
+
+        default:
+            break
+        }
+
+        let command = SimulatorCommand(
+            id: UUID().uuidString,
+            action: action,
+            bundleID: (input["bundle_id"] as? String) ?? (action == "launch" ? appBundleID : nil),
+            x: input["x"] as? Double ?? (input["x"] as? NSNumber)?.doubleValue,
+            y: input["y"] as? Double ?? (input["y"] as? NSNumber)?.doubleValue,
+            elementType: input["element_type"] as? String,
+            label: input["label"] as? String,
+            text: input["text"] as? String,
+            direction: input["direction"] as? String
+        )
+
+        do {
+            let result = try await SimulatorDriverCoordinator.shared.send(command, udid: udid)
+            if result.ok {
+                return (result.detail ?? "Done.", false)
+            }
+            return (result.detail ?? "The action failed.", true)
+        } catch {
+            return (error.localizedDescription, true)
+        }
     }
 
     private func webSearch(

@@ -48,8 +48,27 @@ struct ContentBlock {
     }
 }
 
-func toolResultMessage(toolUseId: String, content: String, isError: Bool) -> [String: Any] {
-    ["type": "tool_result", "tool_use_id": toolUseId, "content": content, "is_error": isError]
+func toolResultMessage(
+    toolUseId: String, content: String, isError: Bool, screenshotPath: String? = nil
+) -> [String: Any] {
+    var message: [String: Any] = ["type": "tool_result", "tool_use_id": toolUseId]
+
+    // With a screenshot, content becomes a block array so vision models see the
+    // result of the interaction (Anthropic supports image blocks in tool_result).
+    if let screenshotPath, !isError,
+       let png = try? Data(contentsOf: URL(fileURLWithPath: screenshotPath)) {
+        message["content"] = [
+            ["type": "text", "text": content],
+            [
+                "type": "image",
+                "source": ["type": "base64", "media_type": "image/png", "data": png.base64EncodedString()],
+            ],
+        ]
+    } else {
+        message["content"] = content
+    }
+    message["is_error"] = isError
+    return message
 }
 
 // MARK: - Stream events
