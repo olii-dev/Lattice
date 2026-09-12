@@ -338,14 +338,14 @@ private struct HubHeroColumn<Mark: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .lineSpacing(2)
             }
-            .padding(14)
+            .padding(LatticeDesign.Spacing.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.05))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 1)
             )
         }
@@ -378,7 +378,7 @@ private struct HubRecentsColumn: View {
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.vertical, LatticeDesign.Spacing.xs)
                     .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08)))
             }
             .padding(.bottom, 14)
@@ -424,13 +424,13 @@ private struct HubSearchField: View {
                 .font(.body)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, LatticeDesign.Spacing.m)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.06))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                 .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.1), lineWidth: 1)
         )
     }
@@ -451,13 +451,13 @@ private struct HubRecentRow: View {
             HStack(alignment: .center, spacing: 14) {
                 ProjectFolderIconView(path: project.path)
                     .frame(width: 40, height: 40)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: LatticeDesign.Radius.control, style: .continuous)
                             .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
                     )
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: LatticeDesign.Spacing.xs) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         HStack(spacing: 6) {
                             if project.isPinned {
@@ -469,6 +469,12 @@ private struct HubRecentRow: View {
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
+                            if let platform = project.platform {
+                                Image(systemName: platform.symbolName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .help(platform.label)
+                            }
                         }
                         Spacer(minLength: 8)
                         Text(relativeLabel)
@@ -512,16 +518,16 @@ private struct HubRecentRow: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .fill(rowFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .strokeBorder(Color.primary.opacity(isHovering ? 0.16 : 0.06), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous))
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.14)) {
                 isHovering = hovering
@@ -590,11 +596,11 @@ private struct HubPrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .fill(Color.accentColor.gradient)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .strokeBorder(.white.opacity(0.22), lineWidth: 1)
             )
             .shadow(color: Color.accentColor.opacity(0.35), radius: configuration.isPressed ? 4 : 12, y: configuration.isPressed ? 2 : 6)
@@ -611,11 +617,11 @@ private struct HubSecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .fill(Color.white.opacity(configuration.isPressed ? 0.10 : 0.075))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LatticeDesign.Radius.panel, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
             )
     }

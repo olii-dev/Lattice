@@ -21,45 +21,30 @@ enum LLMProvider: String, CaseIterable, Identifiable {
     var models: [LLMModelOption] {
         switch self {
         case .anthropic: [
-            .init(id: "claude-opus-4-7", label: "Claude Opus 4.7", supportsImages: true),
-            .init(id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", supportsImages: true),
-            .init(id: "claude-fable-5", label: "Claude Fable 5", supportsImages: true),
-            .init(id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5", supportsImages: true),
-            .init(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", supportsImages: true),
+            .init(id: "claude-fable-5-1", label: "Claude Fable 5.1", supportsImages: true),
+            .init(id: "claude-opus-5", label: "Claude Opus 5", supportsImages: true),
+            .init(id: "claude-sonnet-5", label: "Claude Sonnet 5", supportsImages: true),
         ]
         case .openAI: [
-            .init(id: "gpt-5.4", label: "GPT-5.4", supportsImages: true),
-            .init(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", supportsImages: true),
-            .init(id: "gpt-5.4-nano", label: "GPT-5.4 Nano", supportsImages: true),
-            .init(id: "gpt-5.1", label: "GPT-5.1", supportsImages: true),
-            .init(id: "gpt-5", label: "GPT-5", supportsImages: true),
-            .init(id: "gpt-4.1", label: "GPT-4.1", supportsImages: true),
-            .init(id: "gpt-4o", label: "GPT-4o", supportsImages: true),
-            .init(id: "gpt-4o-mini", label: "GPT-4o mini", supportsImages: true),
+            .init(id: "gpt-6-astra", label: "GPT-6 Astra", supportsImages: true),
+            .init(id: "gpt-5.6-sol", label: "GPT-5.6 Sol", supportsImages: true),
+            .init(id: "gpt-5.6-terra", label: "GPT-5.6 Terra", supportsImages: true),
+            .init(id: "gpt-5.6-luna", label: "GPT-5.6 Luna", supportsImages: true),
         ]
         case .zai: [
-            .init(id: "glm-4.7-flash", label: "GLM-4.7 Flash", supportsImages: false),
-            .init(id: "glm-4.5-flash", label: "GLM-4.5 Flash", supportsImages: false),
-            .init(id: "glm-4.5-air", label: "GLM-4.5 Air", supportsImages: false),
-            .init(id: "glm-4.7", label: "GLM-4.7", supportsImages: false),
-            .init(id: "glm-4.7-flashx", label: "GLM-4.7 FlashX", supportsImages: false),
-            .init(id: "glm-4.6", label: "GLM-4.6", supportsImages: false),
-            .init(id: "glm-4.5", label: "GLM-4.5", supportsImages: false),
-            .init(id: "glm-4.5-x", label: "GLM-4.5 X", supportsImages: false),
-            .init(id: "glm-4.5-airx", label: "GLM-4.5 AirX", supportsImages: false),
-            .init(id: "glm-4-32b-0414-128k", label: "GLM-4 32B 128K", supportsImages: false),
-            .init(id: "glm-5", label: "GLM-5", supportsImages: false),
-            .init(id: "glm-5-turbo", label: "GLM-5 Turbo", supportsImages: false),
-            .init(id: "glm-5.1", label: "GLM-5.1", supportsImages: false),
-            .init(id: "glm-5v-turbo", label: "GLM-5V-Turbo", supportsImages: true),
-            .init(id: "glm-4.6v", label: "GLM-4.6V", supportsImages: true),
-            .init(id: "glm-4.5v", label: "GLM-4.5V", supportsImages: true),
+            .init(id: "glm-5.3-flash", label: "GLM-5.3 Flash", supportsImages: true),
+            .init(id: "glm-5.3", label: "GLM-5.3", supportsImages: false),
+            .init(id: "glm-5.2", label: "GLM-5.2", supportsImages: false),
         ]
         }
     }
 
     var defaultModel: String {
-        models.first?.id ?? ""
+        switch self {
+        case .anthropic: "claude-sonnet-5"
+        case .openAI: "gpt-5.6-terra"
+        case .zai: "glm-5.3-flash"
+        }
     }
 
     var endpoint: URL {
@@ -77,30 +62,63 @@ struct LLMModelOption: Identifiable, Equatable {
     let supportsImages: Bool
 }
 
+/// Resets the stored model selection when it no longer exists in the provider's
+/// catalog (e.g. after pruning pre-2026 models). Unknown provider ids (custom
+/// providers) are left alone.
+enum LLMModelSelectionMigration {
+    static func migrateStoredSelection(defaults: UserDefaults = .standard) {
+        guard let provider = LLMProvider(
+            rawValue: defaults.string(forKey: "selectedProvider") ?? "anthropic"
+        ) else { return }
+        let stored = defaults.string(forKey: "selectedModel") ?? ""
+        guard !provider.models.contains(where: { $0.id == stored }) else { return }
+        defaults.set(provider.defaultModel, forKey: "selectedModel")
+    }
+}
+
 // MARK: - Unified streaming service
 
 struct LLMService {
     private static let providerOverloadMaxAttempts = 4
     private static let providerOverloadRetryDelayNanoseconds: UInt64 = 15 * 1_000_000_000
 
-    private static func shouldRetryAfterTransientProviderFailure(_ error: Error) -> Bool {
-        if let e = error as? StreamError, case .apiError(let raw) = e {
-            let t = raw.lowercased()
-            if t.contains("1305") { return true }
-            if t.contains("1234") { return true }
-            if t.contains("overloaded") { return true }
-            if t.contains("temporarily overloaded") { return true }
-            if t.contains("internal network failure") { return true }
-            if t.contains("rate_limit") || t.contains("rate limit") { return true }
+    /// HTTP statuses transient enough to warrant an automatic retry.
+    /// 529 = Anthropic "overloaded_error", 408 = request timeout, 429 = rate limited.
+    private static let retryableStatusCodes: Set<Int> = [408, 429, 500, 502, 503, 504, 529]
+
+    /// Network-layer failures worth retrying (mid-stream drops, dead connections).
+    private static let retryableURLErrorCodes: Set<URLError.Code> = [
+        .timedOut,
+        .networkConnectionLost,
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .dnsLookupFailed,
+        .notConnectedToInternet,
+    ]
+
+    static func shouldRetryAfterTransientProviderFailure(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return retryableURLErrorCodes.contains(urlError.code)
         }
-        let d = error.localizedDescription.lowercased()
-        return d.contains("1305")
-            || d.contains("1234")
-            || d.contains("overloaded")
-            || d.contains("temporarily overloaded")
-            || d.contains("internal network failure")
-            || d.contains("rate_limit")
-            || d.contains("rate limit")
+        // Fall back to body-text markers only inside provider error payloads —
+        // never against arbitrary error descriptions, where substrings like
+        // "1305" or "1234" can match unrelated content.
+        guard let e = error as? StreamError, case .apiError(let raw, let statusCode) = e else {
+            return false
+        }
+        // A concrete status decides on its own; body markers only matter when no
+        // usable HTTP status was captured.
+        if let statusCode {
+            return retryableStatusCodes.contains(statusCode)
+        }
+        let t = raw.lowercased()
+        if t.contains("1305") { return true }
+        if t.contains("1234") { return true }
+        if t.contains("overloaded") { return true }
+        if t.contains("temporarily overloaded") { return true }
+        if t.contains("internal network failure") { return true }
+        if t.contains("rate_limit") || t.contains("rate limit") { return true }
+        return false
     }
 
     private static let latticeToolDefinitions: [[String: Any]] = [
@@ -171,6 +189,64 @@ struct LLMService {
                 ],
                 "required": ["url"]
             ]
+        ],
+        [
+            "name": "simulator_use",
+            "description": "Drive the running app in the selected simulator like a user: launch it, tap by coordinates or by element label, type text, and swipe. Use this after build+run to verify that screens and flows actually work, and to try the user's requested interactions before replying.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "action": [
+                        "type": "string",
+                        "enum": ["launch", "terminate", "tap", "tap_element", "type", "swipe", "home", "screenshot", "wait", "end_session"],
+                        "description": "The interaction to perform."
+                    ],
+                    "bundle_id": ["type": "string", "description": "App bundle ID for launch/terminate. Optional for launch (defaults to the current project's app)."],
+                    "duration": ["type": "number", "description": "Seconds to wait (0.1-2.5). For wait — use it to let real-time gameplay advance before a screenshot."],
+                    "x": ["type": "number", "description": "Tap position, 0-1 normalized from the left. For tap."],
+                    "y": ["type": "number", "description": "Tap position, 0-1 normalized from the top. For tap."],
+                    "element_type": ["type": "string", "enum": ["button", "text", "textfield"], "description": "Optional element type hint for tap_element."],
+                    "label": ["type": "string", "description": "Visible label of the element to tap. For tap_element."],
+                    "text": ["type": "string", "description": "Text to type into the focused field. For type."],
+                    "direction": ["type": "string", "enum": ["up", "down", "left", "right"], "description": "For swipe."]
+                ],
+                "required": ["action"]
+            ]
+        ],
+        [
+            "name": "add_capability",
+            "description": "Add an Apple capability to the current project. Updates entitlements, Info.plist, and project build settings correctly and idempotently. Always use this instead of hand-editing entitlements or project.pbxproj for capabilities.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "capability": [
+                        "type": "string",
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities", "game_center", "ar"],
+                        "description": "The capability to add."
+                    ],
+                    "parameters": [
+                        "type": "object",
+                        "description": "Capability-specific values. app_groups: AppGroupIdentifier (array of group ids, e.g. [\"group.com.example.app\"]). push_notifications: APSEnvironment ('development' or 'production'). background_modes: UIBackgroundModes (array, e.g. ['audio','remote-notification']). keychain_sharing: KeychainAccessGroup (string). storekit: none. swiftdata: none. cloudkit_sync: iCloudContainerIdentifiers (optional array of container ids; omit for the default container). healthkit: HealthShareUsageDescription + HealthUpdateUsageDescription (plain-language strings required by the App Store). app_intents: SiriUsageDescription (string). widgets: none. live_activities: none. game_center: none. ar: CameraUsageDescription (plain-language string explaining why the app uses the camera; required).",
+                        "properties": [:]
+                    ]
+                ],
+                "required": ["capability"]
+            ]
+        ],
+        [
+            "name": "remove_capability",
+            "description": "Remove an Apple capability from the current project. Strips the capability's entitlement and Info.plist keys safely without affecting other capabilities.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "capability": [
+                        "type": "string",
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities", "game_center", "ar"],
+                        "description": "The capability to remove."
+                    ]
+                ],
+                "required": ["capability"]
+            ]
         ]
     ]
 
@@ -223,6 +299,20 @@ struct LLMService {
         apiKey: String,
         context: ChatContext
     ) -> AsyncThrowingStream<StreamChunk, Error> {
+        if let custom = context.customProvider {
+            switch custom.protocolKind {
+            case .anthropicCompatible:
+                return streamAnthropic(
+                    messages: messages, apiKey: apiKey, context: context,
+                    endpointURLOverride: custom.chatEndpointURL()
+                )
+            case .openAICompatible:
+                return streamOpenAI(
+                    messages: messages, apiKey: apiKey, context: context,
+                    provider: .openAI, baseURLOverride: custom.chatEndpointURL()
+                )
+            }
+        }
         let provider = LLMProvider(rawValue: context.provider) ?? .anthropic
         switch provider {
         case .anthropic:
@@ -237,17 +327,24 @@ struct LLMService {
     private func streamAnthropic(
         messages: [[String: Any]],
         apiKey: String,
-        context: ChatContext
+        context: ChatContext,
+        endpointURLOverride: URL? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 for attempt in 1...Self.providerOverloadMaxAttempts {
                     do {
-                    var request = URLRequest(url: LLMProvider.anthropic.endpoint)
+                    var request = URLRequest(url: endpointURLOverride ?? LLMProvider.anthropic.endpoint)
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    if context.claudeSubscriptionAuth {
+                        // Subscription OAuth (claude setup-token / Pro or Max login).
+                        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+                    } else if !apiKey.isEmpty {
+                        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    }
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
                     let body: [String: Any] = [
@@ -271,11 +368,12 @@ struct LLMService {
                         var data = Data()
                         for try await byte in bytes { data.append(byte) }
                         let msg = parseAnthropicError(data) ?? "HTTP \(http.statusCode)"
-                        throw StreamError.apiError(msg)
+                        throw StreamError.apiError(message: msg, statusCode: http.statusCode)
                     }
 
                     var blocks: [Int: ContentBlock] = [:]
                     var stopReason = "end_turn"
+                    var usage = LLMTokenUsage(inputTokens: nil, outputTokens: nil)
 
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
@@ -285,6 +383,15 @@ struct LLMService {
                         else { continue }
 
                         switch event.type {
+                        case "message_start":
+                            if let inputTokens = event.message?.usage?.input_tokens {
+                                usage.inputTokens = inputTokens
+                            }
+                        case "message_delta":
+                            if let r = event.delta?.stop_reason { stopReason = r }
+                            if let outputTokens = event.usage?.output_tokens {
+                                usage.outputTokens = outputTokens
+                            }
                         case "content_block_start":
                             guard let cb = event.content_block else { break }
                             let idx = event.index ?? 0
@@ -316,14 +423,15 @@ struct LLMService {
                             default: break
                             }
 
-                        case "message_delta":
-                            if let r = event.delta?.stop_reason { stopReason = r }
-
                         default: break
                         }
                     }
 
-                    continuation.yield(.done(stopReason: stopReason, blocks: blocks))
+                    continuation.yield(.done(
+                        stopReason: stopReason,
+                        blocks: blocks,
+                        usage: (usage.inputTokens != nil || usage.outputTokens != nil) ? usage : nil
+                    ))
                     continuation.finish()
                     return
                     } catch {
@@ -349,7 +457,7 @@ struct LLMService {
             return ["max_tokens": 16_384]
         }
         let m = model.lowercased()
-        if m.hasPrefix("gpt-5") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
+        if m.hasPrefix("gpt-5") || m.hasPrefix("gpt-6") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
             return ["max_completion_tokens": 16_384]
         }
         return ["max_tokens": 16_384]
@@ -369,22 +477,28 @@ struct LLMService {
         messages: [[String: Any]],
         apiKey: String,
         context: ChatContext,
-        provider: LLMProvider
+        provider: LLMProvider,
+        baseURLOverride: URL? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 for attempt in 1...Self.providerOverloadMaxAttempts {
                     do {
-                    var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, context: context))
+                    var request = URLRequest(
+                        url: baseURLOverride ?? openAIChatCompletionsURL(provider: provider, context: context)
+                    )
                     request.httpMethod = "POST"
                     request.timeoutInterval = 240
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    if !apiKey.isEmpty {
+                        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    }
 
                     let openAIMessages = convertToOpenAIMessages(messages, context: context)
                     var body: [String: Any] = [
                         "model": context.model,
                         "stream": true,
+                        "stream_options": ["include_usage": true],
                         "tools": openAITools,
                         "messages": openAIMessages
                     ]
@@ -400,20 +514,30 @@ struct LLMService {
                         var data = Data()
                         for try await byte in bytes { data.append(byte) }
                         let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-                        throw StreamError.apiError(msg)
+                        throw StreamError.apiError(message: msg, statusCode: http.statusCode)
                     }
 
                     var blocks: [Int: ContentBlock] = [:]
                     var toolCallIndex = 0
                     var stopReason = "end_turn"
+                    var usage = LLMTokenUsage(inputTokens: nil, outputTokens: nil)
 
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
                         let json = String(line.dropFirst(6))
                         if json == "[DONE]" { break }
                         guard let data = json.data(using: .utf8),
-                              let chunk = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = chunk["choices"] as? [[String: Any]],
+                              let chunk = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+
+                        // Usage arrives in a final chunk with empty choices; capture before
+                        // the choices guard so that chunk isn't skipped.
+                        if let usagePayload = chunk["usage"] as? [String: Any] {
+                            if let input = usagePayload["prompt_tokens"] as? Int { usage.inputTokens = input }
+                            if let output = usagePayload["completion_tokens"] as? Int { usage.outputTokens = output }
+                        }
+
+                        guard let choices = chunk["choices"] as? [[String: Any]],
                               let choice = choices.first,
                               let delta = choice["delta"] as? [String: Any]
                         else { continue }
@@ -454,7 +578,11 @@ struct LLMService {
                         }
                     }
 
-                    continuation.yield(.done(stopReason: stopReason, blocks: blocks))
+                    continuation.yield(.done(
+                        stopReason: stopReason,
+                        blocks: blocks,
+                        usage: (usage.inputTokens != nil || usage.outputTokens != nil) ? usage : nil
+                    ))
                     continuation.finish()
                     return
                     } catch {
@@ -486,17 +614,39 @@ struct LLMService {
                 } else if let content = msg["content"] as? [[String: Any]] {
                     var toolResults: [[String: Any]] = []
                     var contentBlocks: [[String: Any]] = []
+                    var screenshotBlocks: [[String: Any]] = []
 
                     for block in content {
                         let type = block["type"] as? String ?? ""
                         if type == "tool_result" {
                             let toolCallId = block["tool_use_id"] as? String ?? ""
-                            let output = block["content"] as? String ?? ""
-                            toolResults.append([
-                                "role": "tool",
-                                "tool_call_id": toolCallId,
-                                "content": output
-                            ])
+                            if let textContent = block["content"] as? String {
+                                toolResults.append([
+                                    "role": "tool",
+                                    "tool_call_id": toolCallId,
+                                    "content": textContent
+                                ])
+                            } else if let blocks = block["content"] as? [[String: Any]] {
+                                // Flattened text for the tool message; OpenAI forbids images
+                                // in tool results, so screenshots ride a follow-up user turn.
+                                let texts = blocks.compactMap { sub -> String? in
+                                    guard sub["type"] as? String == "text" else { return nil }
+                                    return sub["text"] as? String
+                                }
+                                toolResults.append([
+                                    "role": "tool",
+                                    "tool_call_id": toolCallId,
+                                    "content": texts.joined(separator: "\n")
+                                ])
+                                for sub in blocks where sub["type"] as? String == "image" {
+                                    if let url = openAIDataURL(fromAnthropicImage: sub) {
+                                        screenshotBlocks.append([
+                                            "type": "image_url",
+                                            "image_url": ["url": url]
+                                        ])
+                                    }
+                                }
+                            }
                         } else if type == "text" {
                             contentBlocks.append([
                                 "type": "text",
@@ -515,6 +665,14 @@ struct LLMService {
                         result.append(["role": "user", "content": onlyBlock["text"] as? String ?? ""])
                     } else if !contentBlocks.isEmpty {
                         result.append(["role": "user", "content": contentBlocks])
+                    }
+                    if !screenshotBlocks.isEmpty {
+                        var followUp: [[String: Any]] = [[
+                            "type": "text",
+                            "text": "Screenshot of the simulator after the tool calls above."
+                        ]]
+                        followUp.append(contentsOf: screenshotBlocks)
+                        result.append(["role": "user", "content": followUp])
                     }
                 }
             } else if role == "assistant" {
@@ -601,6 +759,16 @@ struct LLMService {
         return result
     }
 
+    /// Data URL for an Anthropic-style image block ({"source": {"type":"base64","media_type":...,"data":...}}).
+    private func openAIDataURL(fromAnthropicImage block: [String: Any]) -> String? {
+        guard let source = block["source"] as? [String: Any],
+              source["type"] as? String == "base64",
+              let base64 = source["data"] as? String,
+              let mediaType = source["media_type"] as? String
+        else { return nil }
+        return "data:\(mediaType);base64,\(base64)"
+    }
+
     private func openAIImageContentBlock(from block: [String: Any]) -> [String: Any]? {
         guard let payload = encodedImagePayload(from: block) else { return nil }
         return [
@@ -644,17 +812,21 @@ struct LLMService {
     static func latticeSystemPrompt(for context: ChatContext) -> String {
         var prompt = """
         You are Lattice, an autonomous Apple platform coding agent. You have bash, \
-        file read, file write, web search, and webpage fetch tools.
+        file read, file write, web search, webpage fetch, capability, and simulator-control tools.
 
-        Use xcodebuildmcp for all Xcode build, launch, and UI automation operations. \
-        Never use raw xcodebuild, xcrun, or simctl directly.
+        Lattice's own Run button builds and launches the app, and the `simulator_use` tool \
+        drives it (launch, tap, type, swipe, screenshot). Use `bash` for inspection that \
+        needs the shell (e.g. `xcodebuild -list -project <path>`, reading project.pbxproj). \
+        To change app behavior, edit source files with read_file/write_file; to add Apple \
+        capabilities, use add_capability/remove_capability (never hand-edit entitlements).
 
         WORKFLOW:
-        1. Discover the project: xcodebuildmcp macos discover-projects --directory <dir>
-        2. List schemes: xcodebuildmcp macos list-schemes --project-path <path>
-        3. Implement changes using read_file and write_file
-        4. Build: choose destination using ACTIVE CONTEXT. Use simulator/device/mac destination flags that match the selected run target.
-        5. On build errors: fix and rebuild. Never skip a red build.
+        1. Read the relevant source files first to understand the current project.
+        2. Implement changes with write_file, keeping the existing structure and style.
+        3. Ask the user to Run (or use simulator_use to launch) to build and run.
+        4. Use simulator_use to actually operate the app and confirm it works — a build \
+        that compiles is not the same as a feature that works.
+        5. If a build fails, read the error, fix it, and try again. Never claim success on a red build.
 
         RULES:
         - Read source files before editing to understand current state.
@@ -671,9 +843,19 @@ struct LLMService {
         - Write short compact paragraphs with minimal whitespace.
         - For apps created from Lattice’s “New project” flow, bundle identifiers follow com.lattice.<lowercased product slug> unless the user or Xcode project already specifies a different bundle ID. Prefer that pattern when you invent or adjust bundle IDs for those projects.
         - Always keep track of the active bundle identifier from ACTIVE CONTEXT. If you create a new app target, adjust project identity, or touch signing-related files, preserve that bundle identifier unless the user explicitly asks to change it.
-        - When the user asks for Apple capabilities or a feature that requires them, you may update the project files needed to support it: entitlements, Info.plist keys, project build settings, and file references in the Xcode project. Do the file-side work yourself when possible.
-        - Capability examples include push notifications, background modes, associated domains, app groups, HealthKit, camera, microphone, photo library, and local network access.
-        - If a capability also needs an Apple Developer portal action or manual Xcode signing step, still do the file-side changes and then tell the user exactly what remains to be enabled manually.
+        - When the user asks for an Apple capability, use the add_capability tool. Supported capabilities: app_groups, push_notifications, storekit, keychain_sharing, background_modes, swiftdata, cloudkit_sync, healthkit, app_intents, widgets, live_activities, game_center, ar. The tool handles entitlements, Info.plist keys, seed files, extension targets, and project build settings correctly and idempotently.
+        - Never hand-write or hand-edit .entitlements files or entitlement-related project.pbxproj entries. Always use add_capability / remove_capability instead.
+        - swiftdata adds a starter @Model file (SampleData.swift). When it is active, persist user data with SwiftData: define @Model classes, attach .modelContainer(...) to the App or root view, and use @Query in views instead of inventing custom JSON/file storage.
+        - cloudkit_sync enables the iCloud (CloudKit) entitlements. When the user wants synced data, pair it with SwiftData using ModelConfiguration with cloudKitDatabase: .private(...) or .automatic, and tell the user iCloud provisioning steps from the tool's manual steps.
+        - healthkit requires HealthShareUsageDescription and HealthUpdateUsageDescription parameters — write clear, specific plain-language strings based on what the app actually does with health data. When active, gate all HKHealthStore usage behind HKHealthStore.isHealthDataAvailable() and request authorization per data type.
+        - app_intents adds a starter AppIntents file (SampleIntents.swift). When active, define real AppIntents for the app's core actions so they appear in Siri, Shortcuts, and Spotlight.
+        - widgets scaffolds a WidgetKit extension target with a starter widget bundle. When active, customize the widget views and timelines in the Widgets folder instead of creating new targets by hand, and share app data with widgets via App Groups (add the app_groups capability when needed).
+        - live_activities adds a starter ActivityKit activity and sets NSSupportsLiveActivities. If a Widgets extension already exists, add LiveActivityWidget() to the existing WidgetBundle body; otherwise the capability creates the extension for you. Start activities from the app with Activity.request(attributes:content:).
+        - game_center adds a GameCenter starter (GKLocalPlayer auth plus leaderboard/achievement helpers). Use it for high scores, leaderboards, and achievements, and call GameCenterManager.shared.authenticate once at launch.
+        - ar grants camera usage (NSCameraUsageDescription) and adds an ARKit availability helper for RealityKit/ARKit games. Provide a clear CameraUsageDescription; note AR needs a physical camera device, not the simulator.
+        - After building and launching the app, use the simulator_use tool to actually exercise it: launch the app, tap through the main flow, type into fields, and confirm screens behave as requested. A build succeeding is not the same as the app working — verify the interaction the user asked for, then fix what misbehaves. Tap by element label first and fall back to normalized coordinates.
+        - For capabilities outside the supported list (Widgets, Live Activities, Associated Domains, etc.), use the web_search tool to find the correct entitlement and plist keys, then explain to the user what manual steps are needed. Do not hand-write entitlements for unsupported capabilities.
+        - After add_capability returns manual steps, relay them to the user verbatim so they can complete provisioning in the Apple Developer Portal or Xcode.
         - If a valid Xcode project already exists, edit that project in place. Do not invent a second app scaffold or hand-roll a fresh project structure beside it.
         - Do not hand-write or replace project.pbxproj just to scaffold a new app when a Lattice template project already exists. Prefer editing the source files, plist, entitlements, and asset catalog inside the existing project.
         - Default to the current Apple OS generation for the active platform unless the user explicitly asks for older compatibility:
@@ -774,7 +956,76 @@ struct LLMService {
             """
         }
 
+        if context.isGame {
+            prompt += "\n\n" + Self.latticeGamesSection(engineHint: context.gameEngineHint)
+        }
+
         return prompt
+    }
+
+    /// Game Mode guidance. It intentionally OVERRIDES the app/UI guidance above for the
+    /// gameplay surfaces themselves (menus, settings, and store screens still follow it).
+    static func latticeGamesSection(engineHint: String?) -> String {
+        let engineLine = engineHint.map {
+            "- Detected engine for this project: \($0). Stay consistent with it unless the user asks otherwise."
+        } ?? "- No engine detected yet: pick the best fit for the request and say which you chose and why."
+
+        return """
+        GAME MODE — this is a game, not a standard app. Where these rules conflict with the
+        app UI guidance above (NavigationStack/Forms/Lists/Settings patterns), GAME MODE WINS
+        for the gameplay itself; still keep menus, settings, level select, and store screens
+        app-quality.
+
+        ENGINE CHOICE:
+        - 2D arcade, platformer, physics, particle, or action: use SpriteKit (an SKScene hosted
+          in SpriteView). 3D or AR: use RealityKit (RealityView/ARView). Grid, turn-based, card,
+          puzzle, word, or board games: plain SwiftUI with an @Observable game-state model is
+          often the cleanest. Use GameplayKit for AI, state machines, or pathfinding when useful.
+        \(engineLine)
+
+        ARCHITECTURE:
+        - Model the game as a state machine: menu → playing → paused → gameOver (and level/load
+          states). Never rely on implicit view lifecycle for game flow; drive it from game state.
+        - One authoritative update loop with a fixed timestep for simulation (accumulate `currentTime`
+          in update(_:)/a Timer; do not use view redraw timing). Keep simulation separate from rendering.
+        - Keep game rules in plain Swift types (testable, no UI) so difficulty and scoring are tunable.
+        - Use a seeded RNG for anything that should be replayable; avoid Date()/wall-clock in gameplay logic.
+
+        GAME FEEL (what separates a toy from a game — always add some):
+        - Motion: easing curves (not linear), short scale "punch"/squash-stretch on impact and button taps.
+        - Feedback: particles (SKEmitterNode or matchedGeometry/sprite effects), hit-stop pauses, subtle
+          screen shake on big events, and haptics via UIImpactFeedbackGenerator / SFX on the key actions.
+        - Audio: distinct short SFX for actions plus background music; loop cleanly, duck on events.
+        - A readable HUD: score, lives/health, and current state; a clear pause and game-over with restart.
+
+        INPUT & DEVICES:
+        - Handle touch cleanly (touchesBegan/Moved/Ended or DragGesture), and on iPad/Mac support
+          keyboard; add GCController support when the game is genuinely action/controller-driven.
+        - The playfield must respond within the same tap it receives; no dead zones, no accidental
+          multi-tap unless the design wants it.
+
+        PERFORMANCE:
+        - Preload texture atlases; pool and reuse nodes/entities instead of allocating every frame;
+          avoid per-frame allocations and heavy work in update; target 60fps (120 on ProMotion).
+        - Keep the scene graph shallow; use SKAction over manual frame math where it fits.
+
+        ART WITHOUT ASSETS:
+        - You may have no binary art. Make games look intentional with code-drawn art: SKShapeNode /
+          filled SKSpriteNode, gradients, SF Symbols rendered as textures, and a consistent palette.
+          A cohesive flat/geometric look beats broken or placeholder imagery.
+
+        PERSISTENCE & PROGRESSION:
+        - Store high scores/settings with UserDefaults (or @AppStorage) unless a data capability is active;
+          if swiftdata is active use it. For leaderboards/achievements, add the game_center capability.
+
+        VERIFY LIKE A PLAYER:
+        - After building/launching, use simulator_use to play a bit: start the game, perform the core
+          action, confirm the state changes (score moves, a collision happens, you can lose/win), and that
+          pause and restart work. Fix what doesn't feel or behave right before reporting success.
+        - For real-time games (animation, falling objects, spawning, timers): use the wait action to let
+          the loop advance, then screenshot to confirm things actually MOVE — a static frame after a
+          wait that looks identical to before it means the game loop is not running.
+        """
     }
 
     /// Rough token cost for Lattice instructions (system) plus tool schemas (what each API call carries besides `messages`).
@@ -803,12 +1054,32 @@ struct LLMService {
         model: String,
         provider: LLMProvider,
         zaiUseCodingEndpoint: Bool = true,
-        maxOutputTokens: Int = 512
+        maxOutputTokens: Int = 512,
+        customProvider: CustomProvider? = nil,
+        claudeSubscriptionAuth: Bool = false
     ) async throws -> String {
         let cap = min(8192, max(64, maxOutputTokens))
+        if let custom = customProvider {
+            switch custom.protocolKind {
+            case .anthropicCompatible:
+                return try await completeAnthropic(
+                    prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap,
+                    endpointURLOverride: custom.chatEndpointURL()
+                )
+            case .openAICompatible:
+                return try await completeOpenAI(
+                    prompt: prompt, apiKey: apiKey, model: model,
+                    provider: .openAI, zaiUseCodingEndpoint: zaiUseCodingEndpoint, maxTokens: cap,
+                    baseURLOverride: custom.chatEndpointURL()
+                )
+            }
+        }
         switch provider {
         case .anthropic:
-            return try await completeAnthropic(prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap)
+            return try await completeAnthropic(
+                prompt: prompt, apiKey: apiKey, model: model, maxTokens: cap,
+                claudeSubscriptionAuth: claudeSubscriptionAuth
+            )
         case .openAI, .zai:
             return try await completeOpenAI(
                 prompt: prompt,
@@ -821,11 +1092,23 @@ struct LLMService {
         }
     }
 
-    private func completeAnthropic(prompt: String, apiKey: String, model: String, maxTokens: Int) async throws -> String {
-        var request = URLRequest(url: LLMProvider.anthropic.endpoint)
+    private func completeAnthropic(
+        prompt: String,
+        apiKey: String,
+        model: String,
+        maxTokens: Int,
+        endpointURLOverride: URL? = nil,
+        claudeSubscriptionAuth: Bool = false
+    ) async throws -> String {
+        var request = URLRequest(url: endpointURLOverride ?? LLMProvider.anthropic.endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        if claudeSubscriptionAuth {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        } else if !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         let body: [String: Any] = [
@@ -837,7 +1120,10 @@ struct LLMService {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw StreamError.apiError(parseAnthropicError(data) ?? "HTTP \(http.statusCode)")
+            throw StreamError.apiError(
+                message: parseAnthropicError(data) ?? "HTTP \(http.statusCode)",
+                statusCode: http.statusCode
+            )
         }
 
         struct Response: Decodable {
@@ -854,12 +1140,17 @@ struct LLMService {
         model: String,
         provider: LLMProvider,
         zaiUseCodingEndpoint: Bool,
-        maxTokens: Int
+        maxTokens: Int,
+        baseURLOverride: URL? = nil
     ) async throws -> String {
-        var request = URLRequest(url: openAIChatCompletionsURL(provider: provider, zaiUseCodingEndpoint: zaiUseCodingEndpoint))
+        var request = URLRequest(
+            url: baseURLOverride ?? openAIChatCompletionsURL(provider: provider, zaiUseCodingEndpoint: zaiUseCodingEndpoint)
+        )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
 
         var body: [String: Any] = [
             "model": model,
@@ -867,7 +1158,7 @@ struct LLMService {
             "messages": [["role": "user", "content": prompt]]
         ]
         let m = model.lowercased()
-        if provider == .openAI, m.hasPrefix("gpt-5") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
+        if provider == .openAI, m.hasPrefix("gpt-5") || m.hasPrefix("gpt-6") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
             body["max_completion_tokens"] = maxTokens
         } else {
             body["max_tokens"] = maxTokens
@@ -876,7 +1167,10 @@ struct LLMService {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw StreamError.apiError(String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)")
+            throw StreamError.apiError(
+                message: String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)",
+                statusCode: http.statusCode
+            )
         }
 
         struct Response: Decodable {

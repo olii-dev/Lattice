@@ -80,7 +80,9 @@ enum SimulatorBuildRunner {
     /// Conservative floor before invoking `xcodebuild` (iOS builds often need far more at peak).
     private static let minimumFreeBytesBeforeBuild: Int64 = 512 * 1024 * 1024
 
-    private static let subprocessEnvironment: [String: String] = {
+    /// Shared PATH-merged environment for xcodebuild-family subprocesses
+    /// (also used by TestFlightPublisher). Internal for reuse.
+    static let subprocessEnvironment: [String: String] = {
         let standard = [
             "/opt/homebrew/bin",
             "/opt/homebrew/sbin",
