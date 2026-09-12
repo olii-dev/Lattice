@@ -36,14 +36,22 @@ Lattice is a macOS coding agent crafted for iOS, macOS, and watchOS apps. Descri
 ### Building & shipping
 - Build & run on any installed iOS/watchOS simulator, connected devices, or this Mac
 - Screenshot feedback loop: capture the running simulator and attach it to chat so the AI can see and fix the UI
+- Simulator automation: the agent drives the app like a user (launch, tap, type, swipe, wait) and verifies it actually works, not just that it compiled
 - Publish to TestFlight: archive and upload to App Store Connect with an API key, right from the toolbar
 - Source control: commit, push, and open pull requests on GitHub (git init happens automatically for new projects)
 
+### Games
+- "This is a game" project switch turns on Game Mode: engine choice (SpriteKit 2D, RealityKit/ARKit 3D, SwiftUI-casual, GameplayKit), a real game loop + state machine, game feel (juice: tweens, particles, screen shake, haptics), performance guidance, and art-without-assets
+- Lattice auto-detects game projects even mid-build, so an app that becomes a game keeps the right guidance
+- `simulator_use` wait + screenshot lets the agent confirm a real-time game is actually moving
+
 ### Apple capabilities
-Structured, idempotent capability support through chat or the Identity editor:
+Structured, idempotent capability support through chat or the Identity editor (13 total):
 - App Groups, Push Notifications, StoreKit, Keychain Sharing, Background Modes
 - SwiftData (local database, with a starter `@Model`) and iCloud Sync (CloudKit)
 - HealthKit and App Intents (Siri, Shortcuts, Spotlight)
+- Home Screen Widgets (real WidgetKit extension target) and Live Activities
+- Game Center (leaderboards/achievements) and AR (camera / RealityKit)
 
 ### Agent experience
 - Agentic coding loop with bash, file read/write, web search, and web fetch tools
@@ -90,10 +98,11 @@ That means:
 
 ## Current Status
 
-Lattice is already useful, but it is still actively evolving. The product is strongest when working on SwiftUI Apple apps.
+Lattice is already useful, and it is still actively evolving. It is strongest on SwiftUI apps and (with Game Mode) on native SpriteKit/RealityKit games.
 
 Things still improving:
 
-- broader Apple capability coverage (Widgets, Live Activities, and other extension-based capabilities)
-- agent-driven simulator testing (tapping and scrolling like a user)
-- visual polish and preview improvements
+- watchOS complications and more Lock Screen / Live Activity surface polish
+- richer in-game art and audio asset pipelines
+- keeping the model catalog current as providers ship new models
+- ongoing visual polish and preview improvements
