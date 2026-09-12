@@ -42,6 +42,10 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var pendingInspectorHints: AssistantInspectorHints?
     @Published private(set) var projectSummary: LatticeProjectSummary?
     @Published private(set) var livePhase: LatticeDirectorPhase?
+    /// Whether the active project is a game — drives Game Mode in the agent.
+    @Published private(set) var isGameProject: Bool = false
+    /// Best-guess engine for the active game project (nil = agent chooses).
+    @Published private(set) var gameEngineHint: String?
 
     private let service = LLMService()
     private var executor: ToolExecutor {
@@ -229,6 +233,20 @@ final class ChatViewModel: ObservableObject {
         burstKeepItemsPrefixCount = items.count
         burstKeepHistoryPrefixCount = conversationHistory.count
         reloadChatRestorePointHeaders()
+        refreshGameDetection()
+    }
+
+    /// Re-scans the active project to decide whether Game Mode is on (bounded, cheap).
+    private func refreshGameDetection() {
+        let path = scopedProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            isGameProject = false
+            gameEngineHint = nil
+            return
+        }
+        let signal = GameProjectDetector.detect(projectRoot: URL(fileURLWithPath: path))
+        isGameProject = signal.isGame
+        gameEngineHint = signal.engineHint
     }
 
     func persistSession() {
@@ -932,6 +950,8 @@ Only stop and ask the user to fix something if the environment is genuinely bloc
             reloadChatRestorePointHeaders()
         }
         persistSession()
+        // A turn may have turned an app into a game (or vice versa) — re-evaluate.
+        refreshGameDetection()
     }
 
     private func contextualizedMessage(_ text: String, context: ChatContext) -> String {

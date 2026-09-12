@@ -21,6 +21,7 @@ struct NewProjectSheet: View {
 
     @State private var platform: ProjectTemplatePlatform = .iOS
     @State private var productName = ""
+    @State private var isGame = false
     @State private var customAppIcon: NSImage?
     @State private var errorMessage: String?
     @State private var isWorking = false
@@ -41,6 +42,7 @@ struct NewProjectSheet: View {
                     VStack(alignment: .leading, spacing: 22) {
                         platformPicker
                         productField
+                        gameSection
                         appIconSection
                         if let errorMessage {
                             Text(errorMessage)
@@ -165,6 +167,27 @@ struct NewProjectSheet: View {
         }
     }
 
+    private var gameSection: some View {
+        Toggle(isOn: $isGame) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "gamecontroller.fill")
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("This is a game")
+                        .font(.body.weight(.medium))
+                    Text("Switches Lattice into Game Mode — SpriteKit/RealityKit, game loop, physics, and game feel instead of app-style screens and forms. You can still pick the engine in chat.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .toggleStyle(.switch)
+        .padding(.vertical, 4)
+    }
+
     private var appIconSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("App icon (optional)")
@@ -262,7 +285,8 @@ struct NewProjectSheet: View {
                 platform: platform,
                 productName: productName,
                 parentDirectory: parent,
-                appIcon: customAppIcon
+                appIcon: customAppIcon,
+                isGame: isGame
             )
             onCreated(root, platform)
             isPresented = false

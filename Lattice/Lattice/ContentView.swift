@@ -244,6 +244,10 @@ struct ChatContext: Equatable {
     /// When true and provider is Anthropic, authenticate as Bearer OAuth
     /// (Claude subscription token) instead of an `x-api-key`.
     var claudeSubscriptionAuth: Bool = false
+    /// The project is a game — switches the agent into Game Mode.
+    var isGame: Bool = false
+    /// Best-guess engine (e.g. "SpriteKit (2D)"), or nil to let the agent choose.
+    var gameEngineHint: String? = nil
 
     static func == (lhs: ChatContext, rhs: ChatContext) -> Bool {
         lhs.runTarget == rhs.runTarget &&
@@ -258,7 +262,9 @@ struct ChatContext: Equatable {
         lhs.developmentTeam == rhs.developmentTeam &&
         lhs.projectSummary == rhs.projectSummary &&
         lhs.customProvider == rhs.customProvider &&
-        lhs.claudeSubscriptionAuth == rhs.claudeSubscriptionAuth
+        lhs.claudeSubscriptionAuth == rhs.claudeSubscriptionAuth &&
+        lhs.isGame == rhs.isGame &&
+        lhs.gameEngineHint == rhs.gameEngineHint
     }
 
     var messagePrefix: String? {
@@ -276,6 +282,17 @@ struct ChatContext: Equatable {
             [Selected Project Path]
             \(projectPath)
             """)
+        }
+
+        if isGame {
+            var section = """
+            [Project Kind]
+            This is a GAME project. Follow the GAMES section of your instructions: choose a fitting engine, build a real game loop and state machine, and add game feel rather than app-style screens and forms.
+            """
+            if let gameEngineHint, !gameEngineHint.isEmpty {
+                section += "\nDetected engine: \(gameEngineHint)."
+            }
+            sections.append(section)
         }
 
         if let info = buildInfo {
@@ -2701,7 +2718,9 @@ struct ContentView: View {
             developmentTeam: resolvedDevelopmentTeam,
             projectSummary: viewModel.projectSummary,
             customProvider: activeCustomProvider,
-            claudeSubscriptionAuth: selectedProviderOption == .anthropic && useClaudeSubscription
+            claudeSubscriptionAuth: selectedProviderOption == .anthropic && useClaudeSubscription,
+            isGame: viewModel.isGameProject,
+            gameEngineHint: viewModel.gameEngineHint
         )
     }
 
