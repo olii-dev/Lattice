@@ -348,6 +348,11 @@ struct ToolExecutor {
             await SimulatorDriverCoordinator.shared.endSession(udid: udid)
             return ("Simulator driver session ended.", false)
 
+        case "wait":
+            let seconds = min(2.5, max(0.1, (input["duration"] as? Double) ?? (input["duration"] as? NSNumber)?.doubleValue ?? 0.5))
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            return ("Waited \(String(format: "%.1f", seconds))s for the game to advance.", false)
+
         default:
             break
         }

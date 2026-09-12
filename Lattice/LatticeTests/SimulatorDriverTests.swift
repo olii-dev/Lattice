@@ -96,4 +96,13 @@ import Foundation
         #expect(isError)
         #expect(output.localizedCaseInsensitiveContains("simulator"))
     }
+
+    @Test func waitActionSucceedsWithoutDriver() async {
+        let executor = ToolExecutor(simulatorUDID: "fake-udid")
+        let (output, isError) = await executor.execute(
+            name: "simulator_use", input: ["action": "wait", "duration": 0.05]
+        )
+        #expect(!isError)
+        #expect(output.contains("Waited"))
+    }
 }

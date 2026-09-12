@@ -198,10 +198,11 @@ struct LLMService {
                 "properties": [
                     "action": [
                         "type": "string",
-                        "enum": ["launch", "terminate", "tap", "tap_element", "type", "swipe", "home", "screenshot", "end_session"],
+                        "enum": ["launch", "terminate", "tap", "tap_element", "type", "swipe", "home", "screenshot", "wait", "end_session"],
                         "description": "The interaction to perform."
                     ],
                     "bundle_id": ["type": "string", "description": "App bundle ID for launch/terminate. Optional for launch (defaults to the current project's app)."],
+                    "duration": ["type": "number", "description": "Seconds to wait (0.1-2.5). For wait — use it to let real-time gameplay advance before a screenshot."],
                     "x": ["type": "number", "description": "Tap position, 0-1 normalized from the left. For tap."],
                     "y": ["type": "number", "description": "Tap position, 0-1 normalized from the top. For tap."],
                     "element_type": ["type": "string", "enum": ["button", "text", "textfield"], "description": "Optional element type hint for tap_element."],
@@ -1021,6 +1022,9 @@ struct LLMService {
         - After building/launching, use simulator_use to play a bit: start the game, perform the core
           action, confirm the state changes (score moves, a collision happens, you can lose/win), and that
           pause and restart work. Fix what doesn't feel or behave right before reporting success.
+        - For real-time games (animation, falling objects, spawning, timers): use the wait action to let
+          the loop advance, then screenshot to confirm things actually MOVE — a static frame after a
+          wait that looks identical to before it means the game loop is not running.
         """
     }
 

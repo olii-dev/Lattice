@@ -128,9 +128,9 @@ final class SimDriverCommandLoop: XCTestCase {
                 app.coordinate(withNormalizedOffset: clamped).tap()
                 return Result(id: command.id, ok: true, detail: "Tapped (\(clamped.dx), \(clamped.dy))")
 
-            case "tapElement":
+            case "tap_element", "tapElement":
                 guard let label = command.label, !label.isEmpty else {
-                    return Result(id: command.id, ok: false, detail: "tapElement requires label")
+                    return Result(id: command.id, ok: false, detail: "tap_element requires label")
                 }
                 let queries = elementQueries(app: app, elementType: command.elementType, label: label)
                 for query in queries {
