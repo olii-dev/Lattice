@@ -5,7 +5,7 @@ import Foundation
 @Suite struct WidgetCapabilityTests {
 
     @Test func catalogHasElevenCapabilities() {
-        #expect(AppleCapabilityCatalog.all.count == 11)
+        #expect(AppleCapabilityCatalog.all.count == 13)
     }
 
     @Test func applyWidgetsCreatesSeedFilesAndExtensionTarget() async throws {

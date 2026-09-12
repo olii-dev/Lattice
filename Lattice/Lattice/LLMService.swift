@@ -220,12 +220,12 @@ struct LLMService {
                 "properties": [
                     "capability": [
                         "type": "string",
-                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities"],
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities", "game_center", "ar"],
                         "description": "The capability to add."
                     ],
                     "parameters": [
                         "type": "object",
-                        "description": "Capability-specific values. app_groups: AppGroupIdentifier (array of group ids, e.g. [\"group.com.example.app\"]). push_notifications: APSEnvironment ('development' or 'production'). background_modes: UIBackgroundModes (array, e.g. ['audio','remote-notification']). keychain_sharing: KeychainAccessGroup (string). storekit: none. swiftdata: none. cloudkit_sync: iCloudContainerIdentifiers (optional array of container ids; omit for the default container). healthkit: HealthShareUsageDescription + HealthUpdateUsageDescription (plain-language strings required by the App Store). app_intents: SiriUsageDescription (string). widgets: none. live_activities: none.",
+                        "description": "Capability-specific values. app_groups: AppGroupIdentifier (array of group ids, e.g. [\"group.com.example.app\"]). push_notifications: APSEnvironment ('development' or 'production'). background_modes: UIBackgroundModes (array, e.g. ['audio','remote-notification']). keychain_sharing: KeychainAccessGroup (string). storekit: none. swiftdata: none. cloudkit_sync: iCloudContainerIdentifiers (optional array of container ids; omit for the default container). healthkit: HealthShareUsageDescription + HealthUpdateUsageDescription (plain-language strings required by the App Store). app_intents: SiriUsageDescription (string). widgets: none. live_activities: none. game_center: none. ar: CameraUsageDescription (plain-language string explaining why the app uses the camera; required).",
                         "properties": [:]
                     ]
                 ],
@@ -240,7 +240,7 @@ struct LLMService {
                 "properties": [
                     "capability": [
                         "type": "string",
-                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities"],
+                        "enum": ["app_groups", "push_notifications", "storekit", "keychain_sharing", "background_modes", "swiftdata", "cloudkit_sync", "healthkit", "app_intents", "widgets", "live_activities", "game_center", "ar"],
                         "description": "The capability to remove."
                     ]
                 ],
@@ -842,7 +842,7 @@ struct LLMService {
         - Write short compact paragraphs with minimal whitespace.
         - For apps created from Lattice’s “New project” flow, bundle identifiers follow com.lattice.<lowercased product slug> unless the user or Xcode project already specifies a different bundle ID. Prefer that pattern when you invent or adjust bundle IDs for those projects.
         - Always keep track of the active bundle identifier from ACTIVE CONTEXT. If you create a new app target, adjust project identity, or touch signing-related files, preserve that bundle identifier unless the user explicitly asks to change it.
-        - When the user asks for an Apple capability, use the add_capability tool. Supported capabilities: app_groups, push_notifications, storekit, keychain_sharing, background_modes, swiftdata, cloudkit_sync, healthkit, app_intents, widgets, live_activities. The tool handles entitlements, Info.plist keys, seed files, extension targets, and project build settings correctly and idempotently.
+        - When the user asks for an Apple capability, use the add_capability tool. Supported capabilities: app_groups, push_notifications, storekit, keychain_sharing, background_modes, swiftdata, cloudkit_sync, healthkit, app_intents, widgets, live_activities, game_center, ar. The tool handles entitlements, Info.plist keys, seed files, extension targets, and project build settings correctly and idempotently.
         - Never hand-write or hand-edit .entitlements files or entitlement-related project.pbxproj entries. Always use add_capability / remove_capability instead.
         - swiftdata adds a starter @Model file (SampleData.swift). When it is active, persist user data with SwiftData: define @Model classes, attach .modelContainer(...) to the App or root view, and use @Query in views instead of inventing custom JSON/file storage.
         - cloudkit_sync enables the iCloud (CloudKit) entitlements. When the user wants synced data, pair it with SwiftData using ModelConfiguration with cloudKitDatabase: .private(...) or .automatic, and tell the user iCloud provisioning steps from the tool's manual steps.
@@ -850,6 +850,8 @@ struct LLMService {
         - app_intents adds a starter AppIntents file (SampleIntents.swift). When active, define real AppIntents for the app's core actions so they appear in Siri, Shortcuts, and Spotlight.
         - widgets scaffolds a WidgetKit extension target with a starter widget bundle. When active, customize the widget views and timelines in the Widgets folder instead of creating new targets by hand, and share app data with widgets via App Groups (add the app_groups capability when needed).
         - live_activities adds a starter ActivityKit activity and sets NSSupportsLiveActivities. If a Widgets extension already exists, add LiveActivityWidget() to the existing WidgetBundle body; otherwise the capability creates the extension for you. Start activities from the app with Activity.request(attributes:content:).
+        - game_center adds a GameCenter starter (GKLocalPlayer auth plus leaderboard/achievement helpers). Use it for high scores, leaderboards, and achievements, and call GameCenterManager.shared.authenticate once at launch.
+        - ar grants camera usage (NSCameraUsageDescription) and adds an ARKit availability helper for RealityKit/ARKit games. Provide a clear CameraUsageDescription; note AR needs a physical camera device, not the simulator.
         - After building and launching the app, use the simulator_use tool to actually exercise it: launch the app, tap through the main flow, type into fields, and confirm screens behave as requested. A build succeeding is not the same as the app working — verify the interaction the user asked for, then fix what misbehaves. Tap by element label first and fall back to normalized coordinates.
         - For capabilities outside the supported list (Widgets, Live Activities, Associated Domains, etc.), use the web_search tool to find the correct entitlement and plist keys, then explain to the user what manual steps are needed. Do not hand-write entitlements for unsupported capabilities.
         - After add_capability returns manual steps, relay them to the user verbatim so they can complete provisioning in the Apple Developer Portal or Xcode.

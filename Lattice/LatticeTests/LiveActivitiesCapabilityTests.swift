@@ -5,7 +5,7 @@ import Foundation
 @Suite struct LiveActivitiesCapabilityTests {
 
     @Test func catalogHasElevenCapabilities() {
-        #expect(AppleCapabilityCatalog.all.count == 11)
+        #expect(AppleCapabilityCatalog.all.count == 13)
     }
 
     /// Fresh project, no Widgets capability: live_activities creates the extension

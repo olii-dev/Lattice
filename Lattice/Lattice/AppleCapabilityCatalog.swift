@@ -484,6 +484,86 @@ enum AppleCapabilityCatalog {
         applicablePlatforms: [.iOS]
     )
 
+    static let gameCenter = AppleCapability(
+        id: "game_center",
+        displayName: "Game Center",
+        summary: "Leaderboards, achievements, and multiplayer matchmaking via GameKit.",
+        entitlements: [],
+        infoPlistKeys: [],
+        frameworks: ["GameKit.framework"],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)/GameCenter.swift",
+                contents: """
+                import GameKit
+                import Foundation
+
+                // Starter Game Center hooks. Enable Game Center for your App ID, then
+                // create leaderboard and achievement IDs in App Store Connect and use
+                // these helpers. Call authenticate() once at launch (present the view
+                // controller it hands back on iOS).
+                final class GameCenterManager {
+                    static let shared = GameCenterManager()
+
+                    var isAuthenticated: Bool { GKLocalPlayer.local.isAuthenticated }
+
+                    func authenticate(onPresent: @escaping (Any) -> Void = { _ in }) {
+                        GKLocalPlayer.local.authenticateHandler = { viewController, _ in
+                            if let viewController { onPresent(viewController) }
+                        }
+                    }
+
+                    func submitScore(_ score: Int, to leaderboardID: String, completion: ((Error?) -> Void)? = nil) {
+                        guard GKLocalPlayer.local.isAuthenticated else { completion?(nil); return }
+                        GKLeaderboard.submitScore(score, context: 0, player: GKLocalPlayer.local,
+                                                  leaderboardIDs: [leaderboardID]) { error in
+                            completion?(error)
+                        }
+                    }
+
+                    func reportAchievement(_ id: String, percentComplete: Double = 100) {
+                        guard GKLocalPlayer.local.isAuthenticated else { return }
+                        let achievement = GKAchievement(identifier: id)
+                        achievement.percentComplete = percentComplete
+                        achievement.showsCompletionBanner = true
+                        GKAchievement.report([achievement]) { _ in }
+                    }
+                }
+                """
+            ),
+        ],
+        provisioningNotes: "Enable the Game Center capability for your App ID in the Apple Developer Portal, then create your leaderboards and achievements in App Store Connect → Your App → Game Center.",
+        applicablePlatforms: [.iOS, .macOS]
+    )
+
+    static let ar = AppleCapability(
+        id: "ar",
+        displayName: "AR (Camera / RealityKit)",
+        summary: "Camera access for augmented-reality and passthrough experiences.",
+        entitlements: [],
+        infoPlistKeys: [
+            PlistEntry(key: "NSCameraUsageDescription", value: "$(CameraUsageDescription)")
+        ],
+        frameworks: ["ARKit.framework", "RealityKit.framework"],
+        seedFiles: [
+            CapabilitySeedFile(
+                relativePath: "$(AppName)/ARSupport.swift",
+                contents: """
+                import ARKit
+
+                // AR availability helper. Build your AR experience with RealityKit
+                // (RealityView / ARView) or ARKit directly; the camera usage string is
+                // configured by this capability.
+                enum ARSupport {
+                    static var isWorldTrackingAvailable: Bool { ARWorldTrackingConfiguration.isSupported }
+                }
+                """
+            ),
+        ],
+        provisioningNotes: "AR runs on physical devices with a camera (not the simulator). Add 'armv7' under Required device capabilities and set a clear Camera Usage description.",
+        applicablePlatforms: [.iOS]
+    )
+
     /// All supported capabilities, in display order.
     static let all: [AppleCapability] = [
         appGroups,
@@ -497,6 +577,8 @@ enum AppleCapabilityCatalog {
         appIntents,
         widgets,
         liveActivities,
+        gameCenter,
+        ar,
     ]
 
     /// Look up a capability by id. Returns nil if unknown.

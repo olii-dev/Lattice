@@ -42,6 +42,7 @@ struct CapabilitySettingsView: View {
     @State private var iCloudContainerInput: String = ""
     @State private var healthShareUsageInput: String = ""
     @State private var healthUpdateUsageInput: String = ""
+    @State private var cameraUsageInput: String = ""
     @State private var backgroundModes: Set<String> = []
 
     /// The UIBackgroundModes values offered in the UI. Covers the common cases; the user can
@@ -178,6 +179,17 @@ struct CapabilitySettingsView: View {
                 TextField("Saves workouts you log", text: $healthUpdateUsageInput)
                     .textFieldStyle(.roundedBorder)
             }
+        case "ar":
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Camera usage description")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                TextField("Shows the room so you can place objects", text: $cameraUsageInput)
+                    .textFieldStyle(.roundedBorder)
+                Text("Required. AR runs on a physical camera device, not the simulator.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         case "background_modes":
             VStack(alignment: .leading, spacing: 4) {
                 Text("Background modes")
@@ -242,6 +254,11 @@ struct CapabilitySettingsView: View {
                 return "Enter both health usage descriptions before enabling HealthKit — the App Store requires them."
             }
             return nil
+        case "ar":
+            if cameraUsageInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Enter a camera usage description before enabling AR — the App Store requires one."
+            }
+            return nil
         default:
             return nil
         }
@@ -268,6 +285,8 @@ struct CapabilitySettingsView: View {
                 "HealthShareUsageDescription": healthShareUsageInput.trimmingCharacters(in: .whitespacesAndNewlines),
                 "HealthUpdateUsageDescription": healthUpdateUsageInput.trimmingCharacters(in: .whitespacesAndNewlines),
             ]
+        case "ar":
+            return ["CameraUsageDescription": cameraUsageInput.trimmingCharacters(in: .whitespacesAndNewlines)]
         default:
             return [:]
         }
