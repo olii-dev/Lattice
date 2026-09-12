@@ -51,7 +51,7 @@ final class SimDriverCommandLoop: XCTestCase {
         let resultsHandle = try FileHandle(forWritingTo: resultsURL)
         defer { try? resultsHandle.close() }
 
-        var commandsHandle = try FileHandle(forReadingFrom: commandsURL)
+        let commandsHandle = try FileHandle(forReadingFrom: commandsURL)
         var readOffset: UInt64 = 0
         var pendingBuffer = Data()
         var currentApp = XCUIApplication()
@@ -103,6 +103,7 @@ final class SimDriverCommandLoop: XCTestCase {
         app: XCUIApplication,
         setCurrentApp: @escaping (XCUIApplication) -> Void
     ) -> Result {
+        // No XCUI call throws in Swift, so the switch runs in a plain scope block.
         do {
             switch command.action {
             case "launch":
@@ -144,7 +145,7 @@ final class SimDriverCommandLoop: XCTestCase {
                 guard let text = command.text else {
                     return Result(id: command.id, ok: false, detail: "type requires text")
                 }
-                try app.typeText(text)
+                app.typeText(text)
                 return Result(id: command.id, ok: true, detail: "Typed \(text.count) characters")
 
             case "swipe":
@@ -165,8 +166,6 @@ final class SimDriverCommandLoop: XCTestCase {
             default:
                 return Result(id: command.id, ok: false, detail: "Unknown action “\(command.action)”")
             }
-        } catch {
-            return Result(id: command.id, ok: false, detail: error.localizedDescription)
         }
     }
 
