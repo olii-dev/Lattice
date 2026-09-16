@@ -20,10 +20,27 @@ enum APIErrorFormatting {
     }
 
     static func userFacingMessage(from error: Error) -> String {
-        if let stream = error as? StreamError, case .apiError(let raw) = stream {
+        if let urlError = error as? URLError {
+            return friendlyConnectionMessage(urlError)
+        }
+        if let stream = error as? StreamError, case .apiError(let raw, _) = stream {
             return friendlyMessage(from: raw)
         }
         return error.localizedDescription
+    }
+
+    /// Translates connection-level failures into plain language.
+    private static func friendlyConnectionMessage(_ error: URLError) -> String {
+        switch error.code {
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+            return "You appear to be offline. Check your internet connection and try again."
+        case .timedOut:
+            return "The AI provider took too long to answer. Give it another try."
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return "Couldn't reach the provider. If you're using a custom provider, double-check its address — otherwise check your internet connection."
+        default:
+            return "A network problem stopped the request. \(error.localizedDescription)"
+        }
     }
 
     private static func parseOpenAIStyleError(_ obj: [String: Any]) -> String? {
@@ -71,7 +88,11 @@ enum APIErrorFormatting {
         case "429":
             return "Rate limited. Wait briefly or try again later."
         case "401", "403":
-            return "Check that your API key is valid and has access."
+            return "Check that your API key is valid and has access. In Settings, try pasting the key again — extra spaces or a partial copy are the usual culprits."
+        case "404", "model_not_found":
+            return "That model name wasn't recognized. Pick a different model in Settings (Account → Model)."
+        case "402", "insufficient_quota", "insufficient_credits":
+            return "The provider account is out of credit or over its limit. Top up the account, or pick a cheaper model."
         default:
             return nil
         }

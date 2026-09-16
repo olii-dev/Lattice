@@ -46,6 +46,24 @@ struct LatticeWriteFileUndo: Equatable, Sendable {
 }
 
 struct ToolExecutor {
+    /// Project root path, passed in by the chat view so capability tools resolve
+    /// the correct Xcode project. nil = not available (capability tools will error).
+    let projectRootPath: String?
+    /// Selected simulator UDID for `simulator_use`. nil = the tool errors.
+    let simulatorUDID: String?
+    /// The project app's bundle ID, used as the default launch target.
+    let appBundleID: String?
+
+    init(
+        projectRootPath: String? = nil,
+        simulatorUDID: String? = nil,
+        appBundleID: String? = nil
+    ) {
+        self.projectRootPath = projectRootPath
+        self.simulatorUDID = simulatorUDID
+        self.appBundleID = appBundleID
+    }
+
     func execute(name: String, input: [String: Any]) async -> (output: String, isError: Bool) {
         switch name {
         case "bash":
@@ -53,6 +71,9 @@ struct ToolExecutor {
                 return ("Missing 'command' parameter", true)
             }
             return await runBash(command)
+
+        case "simulator_use":
+            return await runSimulatorUse(input)
 
         case "read_file":
             guard let path = input["path"] as? String else {
@@ -81,9 +102,6 @@ struct ToolExecutor {
             } catch {
                 return (error.localizedDescription, true)
             }
-
-        case "open_spec_docs":
-            return ("Spec docs viewer is not available. Use read_file to inspect documents instead.", true)
 
         case "web_search":
             guard let query = input["query"] as? String else {
@@ -117,8 +135,73 @@ struct ToolExecutor {
                 return (error.localizedDescription, true)
             }
 
+        case "add_capability":
+            return await handleAddCapability(input: input)
+
+        case "remove_capability":
+            return await handleRemoveCapability(input: input)
+
         default:
             return ("Unknown tool: \(name)", true)
+        }
+    }
+
+    private func handleAddCapability(input: [String: Any]) async -> (String, Bool) {
+        guard let capabilityId = input["capability"] as? String else {
+            return ("Missing 'capability' parameter", true)
+        }
+        guard let projectRootPath, !projectRootPath.isEmpty else {
+            return ("No project folder is open. Open a project before adding a capability.", true)
+        }
+        let parameters = (input["parameters"] as? [String: Any]) ?? [:]
+        do {
+            let result = try await CapabilityApplicator.apply(
+                capabilityId: capabilityId,
+                to: URL(fileURLWithPath: projectRootPath),
+                parameters: parameters
+            )
+            var summary = "Added \(capabilityId)."
+            if !result.changedFiles.isEmpty {
+                summary += " Updated: " + result.changedFiles.map(\.lastPathComponent).joined(separator: ", ") + "."
+            }
+            if !result.alreadyPresent.isEmpty {
+                summary += " Already present: " + result.alreadyPresent.joined(separator: ", ") + "."
+            }
+            if let steps = result.manualSteps {
+                summary += "\n\nManual steps required:\n\(steps)"
+            }
+            return (summary, false)
+        } catch let err as CapabilityApplicatorError {
+            return (err.localizedDescription, true)
+        } catch {
+            return ("Failed to add capability: \(error.localizedDescription)", true)
+        }
+    }
+
+    private func handleRemoveCapability(input: [String: Any]) async -> (String, Bool) {
+        guard let capabilityId = input["capability"] as? String else {
+            return ("Missing 'capability' parameter", true)
+        }
+        guard let projectRootPath, !projectRootPath.isEmpty else {
+            return ("No project folder is open.", true)
+        }
+        do {
+            let result = try await CapabilityApplicator.remove(
+                capabilityId: capabilityId,
+                from: URL(fileURLWithPath: projectRootPath)
+            )
+            if result.removedKeys.isEmpty {
+                return ("\(capabilityId) was not present; nothing removed.", false)
+            }
+            var summary = "Removed \(capabilityId). Stripped: " + result.removedKeys.joined(separator: ", ") + "."
+            if let steps = result.manualSteps {
+                summary += "\n\nNote: \(steps)"
+            }
+            return (summary, false)
+        } catch let err as CapabilityApplicatorError {
+            return (err.localizedDescription, true)
+        } catch {
+            return ("Failed to remove capability: \(error.localizedDescription)", true)
         }
     }
 
@@ -144,6 +227,20 @@ struct ToolExecutor {
 
     private static let webUserAgent = "Lattice/1.0 (macOS; built-in web tool)"
 
+    /// Cap on combined bash output fed back into the model context (~256KB).
+    private static let maxBashOutputCharacters = 262_144
+
+    /// bash runs inside the project root so model-relative paths resolve as expected;
+    /// with no project open, fall back to a scratch directory instead of the app's own CWD.
+    private var bashWorkingDirectory: URL {
+        let root = projectRootPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !root.isEmpty, FileManager.default.fileExists(atPath: root) {
+            return URL(fileURLWithPath: root, isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    }
+
     private func runBash(_ command: String) async -> (String, Bool) {
         let proc = Process()
         let outPipe = Pipe()
@@ -157,35 +254,129 @@ struct ToolExecutor {
         proc.environment = env
         proc.standardOutput = outPipe
         proc.standardError = errPipe
-        proc.currentDirectoryURL = URL(
-            fileURLWithPath: FileManager.default.currentDirectoryPath
-        )
+        proc.currentDirectoryURL = bashWorkingDirectory
 
-        return await withTaskCancellationHandler {
+        // Drain stdout/stderr continuously via readability handlers; reading them
+        // sequentially after termination deadlocks once output exceeds the OS pipe buffer.
+        let drainLock = NSLock()
+        var stdoutBuffer = Data()
+        var stderrBuffer = Data()
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            drainLock.lock()
+            stdoutBuffer.append(chunk)
+            drainLock.unlock()
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            drainLock.lock()
+            stderrBuffer.append(chunk)
+            drainLock.unlock()
+        }
+
+        do {
+            try proc.run()
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            return ("Failed to launch /bin/bash: \(error.localizedDescription)", true)
+        }
+
+        let terminationStatus: Int32 = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                guard !Task.isCancelled else {
-                    continuation.resume(returning: ("Cancelled", false))
-                    return
-                }
                 proc.terminationHandler = { p in
-                    let stdout = String(
-                        data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                    ) ?? ""
-                    let stderr = String(
-                        data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-                    ) ?? ""
-                    let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
-                    let isError = p.terminationStatus != 0
-                    continuation.resume(returning: (combined.isEmpty ? "(no output)" : combined, isError))
-                }
-                do {
-                    try proc.run()
-                } catch {
-                    continuation.resume(returning: (error.localizedDescription, true))
+                    continuation.resume(returning: p.terminationStatus)
                 }
             }
         } onCancel: {
             proc.terminate()
+        }
+
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        drainLock.lock()
+        let stdout = String(data: stdoutBuffer, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrBuffer, encoding: .utf8) ?? ""
+        drainLock.unlock()
+
+        let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+        let isError = terminationStatus != 0
+        guard !combined.isEmpty else { return ("(no output)", isError) }
+        return (Self.truncateBashOutput(combined), isError)
+    }
+
+    private static func truncateBashOutput(_ text: String) -> String {
+        guard text.count > maxBashOutputCharacters else { return text }
+        let headCount = maxBashOutputCharacters * 3 / 4
+        let tailCount = maxBashOutputCharacters - headCount
+        let omitted = text.count - maxBashOutputCharacters
+        let head = String(text.prefix(headCount))
+        let tail = String(text.suffix(tailCount))
+        return "\(head)\n…[output truncated, \(omitted) characters omitted]…\n\(tail)"
+    }
+
+    // MARK: - simulator_use
+
+    /// Drives the running app in the selected simulator via the SimDriver UI-test
+    /// loop: launch, tap, type, swipe, home, terminate, screenshot.
+    private func runSimulatorUse(_ input: [String: Any]) async -> (output: String, isError: Bool) {
+        guard let action = input["action"] as? String, !action.isEmpty else {
+            return ("Missing 'action' parameter", true)
+        }
+        guard let udid = simulatorUDID, !udid.isEmpty else {
+            return ("No simulator is selected. Pick a run target first (iPhone or Apple Watch simulator).", true)
+        }
+
+        switch action {
+        case "screenshot":
+            do {
+                let url = try await SimulatorScreenshot.capture(deviceUDID: udid)
+                return ("Screenshot saved: \(url.path)", false)
+            } catch {
+                return (error.localizedDescription, true)
+            }
+
+        case "end_session":
+            await SimulatorDriverCoordinator.shared.endSession(udid: udid)
+            return ("Simulator driver session ended.", false)
+
+        case "wait":
+            let seconds = min(2.5, max(0.1, (input["duration"] as? Double) ?? (input["duration"] as? NSNumber)?.doubleValue ?? 0.5))
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            return ("Waited \(String(format: "%.1f", seconds))s for the game to advance.", false)
+
+        default:
+            break
+        }
+
+        let command = SimulatorCommand(
+            id: UUID().uuidString,
+            action: action,
+            bundleID: (input["bundle_id"] as? String) ?? (action == "launch" ? appBundleID : nil),
+            x: input["x"] as? Double ?? (input["x"] as? NSNumber)?.doubleValue,
+            y: input["y"] as? Double ?? (input["y"] as? NSNumber)?.doubleValue,
+            elementType: input["element_type"] as? String,
+            label: input["label"] as? String,
+            text: input["text"] as? String,
+            direction: input["direction"] as? String
+        )
+
+        do {
+            let result = try await SimulatorDriverCoordinator.shared.send(command, udid: udid)
+            if result.ok {
+                return (result.detail ?? "Done.", false)
+            }
+            return (result.detail ?? "The action failed.", true)
+        } catch {
+            return (error.localizedDescription, true)
         }
     }
 

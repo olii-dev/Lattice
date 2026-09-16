@@ -80,7 +80,8 @@ enum ProjectTemplateCopier {
         platform: ProjectTemplatePlatform,
         productName rawProduct: String,
         parentDirectory: URL,
-        appIcon: NSImage? = nil
+        appIcon: NSImage? = nil,
+        isGame: Bool = false
     ) throws -> URL {
         guard let product = sanitizedProductName(rawProduct) else {
             throw ProjectTemplateCopierError.invalidProductName
@@ -121,6 +122,11 @@ enum ProjectTemplateCopier {
         if let icon = appIcon {
             try ProjectAppIconWriter.write(image: icon, projectRoot: root)
         }
+        if isGame {
+            GameProjectDetector.writeMarker(projectRoot: root)
+        }
+        // Best-effort git init so checkpoints and source control work from day one.
+        try? SourceControlService.initializeRepository(projectRoot: root)
         return root
     }
 
